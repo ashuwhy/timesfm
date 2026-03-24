@@ -439,6 +439,9 @@ CHART_RC = {
 
 def plot_training_curves(train_losses, val_losses, results_dir, ticker):
     """Panel 1: Training + validation loss over epochs."""
+    if not train_losses or not val_losses:
+        print("  Skipping training curves (no data)")
+        return None
     plt.rcParams.update(CHART_RC)
     fig, ax = plt.subplots(figsize=(12, 5))
     epochs = range(1, len(train_losses) + 1)
@@ -659,6 +662,8 @@ def main():
     parser.add_argument("--stride", type=int, default=1)
     parser.add_argument("--test_fraction", type=float, default=0.2)
     parser.add_argument("--results_dir", type=str, default="./results/lora")
+    parser.add_argument("--load-only", action="store_true",
+                        help="Skip training; load saved LoRA weights and run backtest only")
     args = parser.parse_args()
 
     if torch.cuda.is_available():
@@ -714,46 +719,53 @@ def main():
     stats = inject_lora(model_module, rank=args.lora_rank, alpha=args.lora_alpha,
                         target_modules=args.target_modules)
     model_module = model_module.to(device)
+    model_module.device = device  # sync the attribute TimesFM uses to route inputs
     model.model = model_module
     print(f"  Injected: {stats['injected_layers']} layers")
     print(f"  LoRA params: {stats['lora_params']:,} / {stats['base_params']:,} "
           f"({stats['pct_trainable']:.2f}%)")
 
     # ── Training ──────────────────────────────────────────────────────────
-    trainable = [p for p in model_module.parameters() if p.requires_grad]
-    optimizer = torch.optim.AdamW(trainable, lr=args.lr, weight_decay=0.01)
-    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.epochs, eta_min=args.lr*0.01)
     patch_len = model_module.p
-
-    print(f"\n── Training ({args.epochs} epochs) ──")
-    train_losses, val_losses = [], []
-    best_val, best_epoch = float("inf"), 0
     os.makedirs(args.results_dir, exist_ok=True)
     lora_path = os.path.join(args.results_dir, f"{args.ticker.replace('-','_').lower()}_lora.pt")
-    t_total = time.time()
 
-    for epoch in range(1, args.epochs + 1):
-        t0 = time.time()
-        tl = train_one_epoch(model_module, train_loader, optimizer, device, args.pred_len, patch_len)
-        vl = validate(model_module, val_loader, device, args.pred_len, patch_len)
-        scheduler.step()
-        train_losses.append(tl)
-        val_losses.append(vl)
-        dt = time.time() - t0
+    train_losses, val_losses, best_epoch = [], [], 0
+    if args.load_only:
+        print(f"\n── Skipping training; loading weights from {lora_path} ──")
+        load_lora_weights(model_module, lora_path)
+        total_time = 0.0
+    else:
+        trainable = [p for p in model_module.parameters() if p.requires_grad]
+        optimizer = torch.optim.AdamW(trainable, lr=args.lr, weight_decay=0.01)
+        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.epochs, eta_min=args.lr*0.01)
 
-        improved = ""
-        if vl < best_val:
-            best_val, best_epoch = vl, epoch
-            save_lora_weights(model_module, lora_path)
-            improved = " ★"
+        print(f"\n── Training ({args.epochs} epochs) ──")
+        best_val = float("inf")
+        t_total = time.time()
 
-        if epoch % max(1, args.epochs // 20) == 0 or epoch == 1 or improved:
-            print(f"  Epoch {epoch:3d}/{args.epochs}  train={tl:.6f}  val={vl:.6f}  "
-                  f"lr={optimizer.param_groups[0]['lr']:.2e}  {dt:.1f}s{improved}")
+        for epoch in range(1, args.epochs + 1):
+            t0 = time.time()
+            tl = train_one_epoch(model_module, train_loader, optimizer, device, args.pred_len, patch_len)
+            vl = validate(model_module, val_loader, device, args.pred_len, patch_len)
+            scheduler.step()
+            train_losses.append(tl)
+            val_losses.append(vl)
+            dt = time.time() - t0
 
-    total_time = time.time() - t_total
-    print(f"\n  Best val: {best_val:.6f} @ epoch {best_epoch}  |  Total: {total_time:.0f}s")
-    load_lora_weights(model_module, lora_path)
+            improved = ""
+            if vl < best_val:
+                best_val, best_epoch = vl, epoch
+                save_lora_weights(model_module, lora_path)
+                improved = " ★"
+
+            if epoch % max(1, args.epochs // 20) == 0 or epoch == 1 or improved:
+                print(f"  Epoch {epoch:3d}/{args.epochs}  train={tl:.6f}  val={vl:.6f}  "
+                      f"lr={optimizer.param_groups[0]['lr']:.2e}  {dt:.1f}s{improved}")
+
+        total_time = time.time() - t_total
+        print(f"\n  Best val: {best_val:.6f} @ epoch {best_epoch}  |  Total: {total_time:.0f}s")
+        load_lora_weights(model_module, lora_path)
 
     # ── Fine-tuned backtest ───────────────────────────────────────────────
     print("\n── Fine-Tuned Backtest ──")

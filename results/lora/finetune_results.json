@@ -1,0 +1,31 @@
+{
+  "ticker": "BTC-USD",
+  "lora_rank": 8,
+  "lora_alpha": 16.0,
+  "target_modules": "all",
+  "epochs": 50,
+  "best_epoch": 0,
+  "lora_params": 2048000,
+  "pct_trainable": 0.885471215959512,
+  "training_time_s": 0.0,
+  "baseline": {
+    "mse": 0.24892987097872477,
+    "mae": 0.34607191994046554,
+    "dir_acc": 0.47290640394088673
+  },
+  "finetuned": {
+    "mse": 0.25161260616630515,
+    "mae": 0.35345697677439086,
+    "dir_acc": 0.5270935960591133
+  },
+  "mse_improvement_pct": -1.0777072181143228,
+  "mae_improvement_pct": -2.1339659210709043,
+  "dir_acc_improvement_pp": 5.418719211822659,
+  "train_losses": [],
+  "val_losses": [],
+  "chart_paths": [
+    "./results/lora/btc_usd_metrics_comparison.png",
+    "./results/lora/btc_usd_forecast_windows.png",
+    "./results/lora/btc_usd_error_analysis.png"
+  ]
+}
