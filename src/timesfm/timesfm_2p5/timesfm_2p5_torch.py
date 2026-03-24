@@ -385,9 +385,9 @@ class TimesFM_2p5_200M_torch(timesfm_2p5_base.TimesFM_2p5, ModelHubMixin):
         )
 
       inputs = (
-        torch.from_numpy(np.array(inputs)).to(self.model.device).to(torch.float32)
+        torch.from_numpy(np.array(inputs)).to(torch.float32).to(self.model.device)
       )
-      masks = torch.from_numpy(np.array(masks)).to(self.model.device).to(torch.bool)
+      masks = torch.from_numpy(np.array(masks)).to(torch.bool).to(self.model.device)
       batch_size = inputs.shape[0]
 
       if fc.infer_is_positive:
