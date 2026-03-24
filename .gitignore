@@ -4,7 +4,7 @@ __pycache__/
 checkpoints/
 wandb/
 datasets/
-results/
+# results/
 timesfm_jax.egg-info/
 development_setup.md
 .DS_Store

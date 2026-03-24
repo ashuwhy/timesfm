@@ -1,0 +1,29 @@
+[
+  {
+    "ticker": "BTC-USD",
+    "interval": "1d",
+    "backtest": {
+      "mse": 0.24892987097872477,
+      "mae": 0.34607191994046554,
+      "smape": 0.08752339959327529,
+      "wape": 0.08231425952618947,
+      "directional_accuracy": 0.4729064039408867,
+      "num_windows": 28,
+      "num_elements": 840,
+      "train_size": 3366,
+      "test_size": 841,
+      "total_candles": 4207,
+      "total_time": 3.357170820236206
+    },
+    "forecast": {
+      "last_price": 71233.4375,
+      "forecast_first": 71181.8359375,
+      "forecast_last": 74016.765625,
+      "forecast_min": 71181.8359375,
+      "forecast_max": 74016.765625,
+      "pct_change": 3.9073337223126425,
+      "horizon": 30
+    },
+    "report_path": "./results/crypto/btc_usd_1d_report.png"
+  }
+]
