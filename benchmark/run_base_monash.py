@@ -1,41 +1,40 @@
 #!/usr/bin/env python3
-# Copyright 2024 Google LLC
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
+"""Monash benchmark for base TimesFM 2.5 200M (PyTorch).
 
-"""Monash extended benchmark for TimesFM 2.5 200M (PyTorch).
-
-Evaluates the pretrained model on the full Monash dataset suite using gluonts.
-Adapted from v1/experiments/extended_benchmarks/run_timesfm.py for the v2.5 API.
+Evaluates the pretrained TimesFM 2.5 model on the extended Monash benchmark
+suite (same datasets as v1/experiments/extended_benchmarks) using the v2.5 API.
 
 Usage:
-    python benchmark/run_base_monash.py [--save_dir results/monash] [--max_context 512]
+    python benchmark/run_base_monash.py [--save_dir results/monash]
 """
 
 import argparse
 import os
-import sys
 import time
+from functools import partial
+from itertools import repeat
+import multiprocessing
 
 import numpy as np
 import pandas as pd
 import torch
+
+# ── gluonts dataset loading ─────────────────────────────────────────────────
+from gluonts.dataset.repository.datasets import (
+    dataset_names as gluonts_datasets,
+    get_dataset,
+)
+from gluonts.time_feature.seasonality import get_seasonality
+
+# ── evaluation helpers ───────────────────────────────────────────────────────
+from utilsforecast.evaluation import evaluate
+from utilsforecast.losses import mae, mase, smape
+
 import timesfm
 
-# Add benchmark dir to path so we can import monash_utils
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from monash_utils import ExperimentHandler
-
+# ═════════════════════════════════════════════════════════════════════════════
+# Dataset list — same as v1/experiments/extended_benchmarks/run_timesfm.py
+# ═════════════════════════════════════════════════════════════════════════════
 DATASET_NAMES = [
     "m1_monthly",
     "m1_quarterly",
@@ -50,7 +49,6 @@ DATASET_NAMES = [
     "tourism_quarterly",
     "tourism_yearly",
     "nn5_daily_without_missing",
-    "m5",
     "nn5_weekly",
     "traffic",
     "weather",
@@ -58,17 +56,12 @@ DATASET_NAMES = [
     "car_parts_without_missing",
     "cif_2016",
     "covid_deaths",
-    "ercot",
-    "ett_small_15min",
-    "ett_small_1h",
     "exchange_rate",
     "fred_md",
     "hospital",
 ]
 
-QUANTILES = list(np.arange(1, 10) / 10.0)
-
-# Datasets that benefit from shorter context lengths
+# Per-dataset context-length overrides (shorter series benefit from smaller ctx)
 CONTEXT_OVERRIDES = {
     "cif_2016": 32,
     "tourism_yearly": 64,
@@ -86,209 +79,215 @@ CONTEXT_OVERRIDES = {
     "m4_yearly": 64,
 }
 
-MODEL_NAME = "timesfm"
+
+# ═════════════════════════════════════════════════════════════════════════════
+# Helpers: gluonts → pandas conversion
+# ═════════════════════════════════════════════════════════════════════════════
+def _transform_instance(args):
+    ts, last_n = args
+    start_period = ts["start"]
+    start_ds = start_period.to_timestamp()
+    freq = start_period.freq
+    target = ts["target"]
+    ds = pd.date_range(start=start_ds, freq=freq, periods=len(target))
+    if last_n is not None:
+        target = target[-last_n:]
+        ds = ds[-last_n:]
+    return pd.DataFrame({"unique_id": ts["item_id"], "ds": ds, "y": target})
 
 
-def forecast_on_df(
-    model: timesfm.TimesFM_2p5_200M_torch,
-    train_df: pd.DataFrame,
-    horizon: int,
-    context_len: int,
-    model_name: str = "timesfm",
-    quantiles: list[float] = QUANTILES,
-) -> pd.DataFrame:
-    """Forecast using v2.5 API, returning a DataFrame compatible with ExperimentHandler.
-
-    Groups the input DataFrame by unique_id, extracts context, calls model.forecast(),
-    and reassembles results into the expected format.
-    """
-    grouped = train_df.groupby("unique_id", sort=False)
-
-    unique_ids = []
-    contexts = []
-    last_dates = []
-    freqs_per_series = []
-
-    for uid, group in grouped:
-        group = group.sort_values("ds")
-        values = group["y"].values.astype(np.float64)
-        # Take last context_len values
-        ctx = values[-context_len:] if len(values) > context_len else values
-        contexts.append(ctx)
-        unique_ids.append(uid)
-        last_dates.append(group["ds"].iloc[-1])
-        freqs_per_series.append(
-            pd.infer_freq(group["ds"]) if len(group) > 2 else None
-        )
-
-    # Run forecast
-    point_forecast, quantile_forecast = model.forecast(
-        horizon=horizon, inputs=contexts
-    )
-    # point_forecast: (N, H), quantile_forecast: (N, H, Q)
-
-    # Build output DataFrame
-    all_rows = []
-    for i, uid in enumerate(unique_ids):
-        freq = freqs_per_series[i]
-        try:
-            future_dates = pd.date_range(
-                start=last_dates[i], periods=horizon + 1, freq=freq
-            )[1:]
-        except Exception:
-            # Fallback: integer index
-            future_dates = list(range(horizon))
-
-        row_data = {
-            "unique_id": [uid] * horizon,
-            "ds": future_dates,
-            model_name: point_forecast[i, :horizon],
-        }
-
-        # Add quantile columns
-        for qi, q in enumerate(quantiles):
-            q_col = f"{model_name}-q-{q}"
-            row_data[q_col] = quantile_forecast[i, :horizon, qi]
-
-        all_rows.append(pd.DataFrame(row_data))
-
-    fcsts_df = pd.concat(all_rows, ignore_index=True)
-    return fcsts_df
+def gluonts_to_df(dataset, last_n=None):
+    """Convert a gluonts Dataset to a pandas DataFrame."""
+    try:
+        with multiprocessing.Pool(min(os.cpu_count() or 1, 4)) as pool:
+            results = pool.map(
+                _transform_instance, zip(dataset, repeat(last_n))
+            )
+    except Exception:
+        results = [_transform_instance((ts, last_n)) for ts in dataset]
+    return pd.concat(results).reset_index(drop=True)
 
 
-def main():
-    parser = argparse.ArgumentParser(
-        description="Monash extended benchmark for TimesFM 2.5"
-    )
-    parser.add_argument(
-        "--save_dir", type=str, default="./results/monash",
-        help="Directory to save results"
-    )
-    parser.add_argument(
-        "--max_context", type=int, default=512,
-        help="Maximum context length"
-    )
-    parser.add_argument(
-        "--max_horizon", type=int, default=128,
-        help="Maximum horizon length for model compilation"
-    )
-    parser.add_argument(
-        "--datasets", nargs="+", default=None,
-        help="Specific datasets to evaluate (default: all)"
-    )
-    args = parser.parse_args()
+def _maybe_download_m3(dataset_name):
+    """Download M3 raw data if needed (gluonts expects it)."""
+    from pathlib import Path
+    if dataset_name[:2] == "m3":
+        m3_file = Path.home() / ".gluonts" / "datasets" / "M3C.xls"
+        if not m3_file.exists():
+            try:
+                from datasetsforecast.m3 import M3
+                from datasetsforecast.utils import download_file
+                download_file(m3_file.parent, M3.source_url)
+            except Exception as e:
+                print(f"  Warning: could not download M3 file: {e}")
 
-    datasets = args.datasets if args.datasets else DATASET_NAMES
 
-    # Load model
-    if torch.cuda.is_available():
-        device = "cuda"
-    elif torch.backends.mps.is_available():
-        device = "mps"
-    else:
-        device = "cpu"
-    print(f"Using device: {device}")
-    print("Loading TimesFM 2.5 200M model...")
+# ═════════════════════════════════════════════════════════════════════════════
+# Main benchmark
+# ═════════════════════════════════════════════════════════════════════════════
+def run_monash_benchmark(save_dir: str, max_context: int = 512):
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    print(f"Device: {device}")
+    print("Loading TimesFM 2.5 200M (PyTorch)...")
+
     model = timesfm.TimesFM_2p5_200M_torch.from_pretrained(
         "google/timesfm-2.5-200m-pytorch"
     )
     model.compile(
         timesfm.ForecastConfig(
-            max_context=args.max_context,
-            max_horizon=args.max_horizon,
+            max_context=max_context,
+            max_horizon=128,
             normalize_inputs=True,
-            use_continuous_quantile_head=False,
-            force_flip_invariance=True,
+            per_core_batch_size=32,
         )
     )
-    print("Model loaded and compiled.")
+    print("Model loaded & compiled.\n")
 
+    model_name = "timesfm_2p5"
     results_list = []
-    run_id = np.random.randint(100000)
 
-    for dataset in datasets:
-        print(f"\n{'='*60}")
-        print(f"Evaluating {MODEL_NAME} on dataset: {dataset}")
-        print(f"{'='*60}")
+    for ds_name in DATASET_NAMES:
+        print(f"{'─'*60}")
+        print(f"Dataset: {ds_name}")
 
-        try:
-            exp = ExperimentHandler(dataset, quantiles=QUANTILES)
-        except Exception as e:
-            print(f"  SKIP: Failed to load dataset {dataset}: {e}")
+        # Check availability
+        if ds_name not in gluonts_datasets:
+            print(f"  Skipping (not in gluonts registry)")
             continue
 
-        # Context length override
-        context_len = CONTEXT_OVERRIDES.get(dataset, args.max_context)
-        horizon = exp.horizon
+        _maybe_download_m3(ds_name)
 
-        # Re-compile if horizon exceeds current max_horizon
-        if horizon > args.max_horizon:
-            print(f"  Re-compiling model with max_horizon={horizon}...")
-            model.compile(
-                timesfm.ForecastConfig(
-                    max_context=args.max_context,
-                    max_horizon=horizon,
-                    normalize_inputs=True,
-                    use_continuous_quantile_head=False,
-                    force_flip_invariance=True,
-                )
-            )
+        try:
+            gluonts_ds = get_dataset(ds_name)
+        except Exception as e:
+            print(f"  Skipping (load error: {e})")
+            continue
 
-        train_df = exp.train_df
-        print(f"  Horizon: {horizon}, Context: {context_len}, "
-              f"Series count: {train_df['unique_id'].nunique()}")
+        horizon = gluonts_ds.metadata.prediction_length
+        if horizon is None:
+            print(f"  Skipping (no prediction_length)")
+            continue
 
-        init_time = time.time()
-        fcsts_df = forecast_on_df(
-            model=model,
-            train_df=train_df,
+        freq = gluonts_ds.metadata.freq
+        if freq == "D":
+            seasonality = 7
+        else:
+            seasonality = get_seasonality(freq)
+
+        ctx_len = CONTEXT_OVERRIDES.get(ds_name, max_context)
+        print(f"  horizon={horizon}, freq={freq}, seasonality={seasonality}, ctx={ctx_len}")
+
+        # Build train/test DataFrames
+        train_df = gluonts_to_df(gluonts_ds.train)
+        test_df = gluonts_to_df(gluonts_ds.test, last_n=horizon)
+        # Keep only the first backtest window
+        test_df = test_df.groupby("unique_id", sort=False).head(horizon)
+
+        # Group by unique_id: build inputs list
+        unique_ids = train_df["unique_id"].unique()
+        inputs = []
+        for uid in unique_ids:
+            series = train_df.loc[train_df["unique_id"] == uid, "y"].values
+            # Truncate to context length
+            if len(series) > ctx_len:
+                series = series[-ctx_len:]
+            inputs.append(series.astype(np.float64))
+
+        # Forecast
+        t0 = time.time()
+        point_forecast, quantile_forecast = model.forecast(
             horizon=horizon,
-            context_len=context_len,
-            model_name=MODEL_NAME,
-            quantiles=QUANTILES,
+            inputs=inputs,
         )
-        total_time = time.time() - init_time
-        print(f"  Forecast time: {total_time:.2f}s")
+        elapsed = time.time() - t0
+        print(f"  Inference time: {elapsed:.2f}s for {len(inputs)} series")
 
-        time_df = pd.DataFrame({"time": [total_time], "model": MODEL_NAME})
+        # Build forecast DataFrame
+        fcst_rows = []
+        for i, uid in enumerate(unique_ids):
+            uid_test = test_df[test_df["unique_id"] == uid]
+            if len(uid_test) == 0:
+                continue
+            ds_vals = uid_test["ds"].values[:horizon]
+            pf = point_forecast[i, :horizon]
+            for j in range(min(len(ds_vals), horizon)):
+                fcst_rows.append({
+                    "unique_id": uid,
+                    "ds": ds_vals[j],
+                    model_name: pf[j],
+                })
+        fcsts_df = pd.DataFrame(fcst_rows)
 
+        # Evaluate
         try:
-            results = exp.evaluate_from_predictions(
-                models=[MODEL_NAME],
-                fcsts_df=fcsts_df,
-                times_df=time_df,
+            merged = test_df.merge(fcsts_df, on=["unique_id", "ds"], how="left")
+            merged = merged.dropna(subset=[model_name])
+            if len(merged) == 0:
+                print("  Skipping (no overlapping forecasts)")
+                continue
+
+            merged["unique_id"] = merged["unique_id"].astype(str)
+            train_df["unique_id"] = train_df["unique_id"].astype(str)
+
+            mase_fn = partial(mase, seasonality=seasonality)
+            eval_df = evaluate(
+                merged[["unique_id", "ds", "y", model_name]],
+                train_df=train_df,
+                metrics=[smape, mase_fn, mae],
             )
-            print(results.to_string(index=False))
-            results_list.append(results)
+            eval_df = eval_df.groupby("metric").mean(numeric_only=True).reset_index()
+            eval_df = eval_df.melt(
+                id_vars="metric", value_name="value", var_name="model"
+            )
+
+            time_row = pd.DataFrame({
+                "dataset": [ds_name],
+                "metric": ["time"],
+                "model": [model_name],
+                "value": [elapsed],
+            })
+            eval_df.insert(0, "dataset", ds_name)
+            eval_df = pd.concat([eval_df, time_row]).reset_index(drop=True)
+
+            print(eval_df.to_string(index=False))
+            results_list.append(eval_df)
         except Exception as e:
-            print(f"  ERROR during evaluation: {e}")
+            print(f"  Evaluation error: {e}")
+            import traceback
+            traceback.print_exc()
             continue
 
-        # Save incremental results
-        if results_list:
-            results_full = pd.concat(results_list)
-            save_path = os.path.join(args.save_dir, str(run_id))
-            os.makedirs(save_path, exist_ok=True)
-            results_full.to_csv(f"{save_path}/results.csv", index=False)
-
-    # Final summary
+    # Save combined results
     if results_list:
-        results_full = pd.concat(results_list)
-        save_path = os.path.join(args.save_dir, str(run_id))
-        os.makedirs(save_path, exist_ok=True)
-        results_full.to_csv(f"{save_path}/results.csv", index=False)
+        all_results = pd.concat(results_list).reset_index(drop=True)
+        os.makedirs(save_dir, exist_ok=True)
+        csv_path = os.path.join(save_dir, "results.csv")
+        all_results.to_csv(csv_path, index=False)
+        print(f"\n{'═'*60}")
+        print(f"All results saved to {csv_path}")
 
-        print(f"\n{'='*60}")
-        print("FINAL SUMMARY")
-        print(f"{'='*60}")
-        pivot = results_full.pivot_table(
-            index="dataset", columns="metric", values="value", aggfunc="mean"
+        # Print summary table
+        summary = all_results[all_results["metric"] != "time"].pivot_table(
+            index="dataset", columns="metric", values="value"
         )
-        print(pivot.to_string())
-        print(f"\nResults saved to: {save_path}/results.csv")
+        print(f"\n{'═'*60}")
+        print("MONASH BENCHMARK SUMMARY (TimesFM 2.5 200M)")
+        print("═" * 60)
+        print(summary.to_string())
+        print("═" * 60)
     else:
-        print("\nNo results were produced.")
+        print("No results collected!")
 
 
 if __name__ == "__main__":
-    main()
+    parser = argparse.ArgumentParser(description="Monash benchmark for TimesFM 2.5")
+    parser.add_argument("--save_dir", default="results/monash", help="Output directory")
+    parser.add_argument("--max_context", type=int, default=512, help="Max context length")
+    args = parser.parse_args()
+
+    try:
+        multiprocessing.set_start_method("spawn")
+    except RuntimeError:
+        pass
+
+    run_monash_benchmark(save_dir=args.save_dir, max_context=args.max_context)
