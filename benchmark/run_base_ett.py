@@ -23,9 +23,7 @@ import tqdm
 
 import timesfm
 
-# ═════════════════════════════════════════════════════════════════════════════
-# ETT dataset configuration
-# ═════════════════════════════════════════════════════════════════════════════
+# Data configs
 DATA_DICT = {
     "ettm2": {
         "boundaries": [34560, 46080, 57600],
@@ -57,9 +55,7 @@ ETT_GITHUB_BASE = (
 )
 
 
-# ═════════════════════════════════════════════════════════════════════════════
-# Utilities
-# ═════════════════════════════════════════════════════════════════════════════
+# Helpers
 def download_ett_if_needed(data_path: str, filename: str):
     """Download ETT CSV from GitHub if it doesn't exist locally."""
     if os.path.exists(data_path):
@@ -117,9 +113,7 @@ def create_test_windows(data_df, ts_cols, boundaries, context_len, pred_len, nor
     return windows_past, windows_actual
 
 
-# ═════════════════════════════════════════════════════════════════════════════
-# Main benchmark
-# ═════════════════════════════════════════════════════════════════════════════
+# Main eval loop
 def run_ett_benchmark(results_dir: str, context_len: int = CONTEXT_LEN):
     device = "cuda" if torch.cuda.is_available() else "cpu"
     print(f"Device: {device}")
@@ -235,18 +229,12 @@ def run_ett_benchmark(results_dir: str, context_len: int = CONTEXT_LEN):
     print(f"\nResults saved to {json_path}")
 
     # Print summary table
-    print(f"\n{'═'*80}")
-    print("ETT LONG-HORIZON BENCHMARK SUMMARY (TimesFM 2.5 200M)")
-    print("═" * 80)
-    print(f"{'Dataset':<12} {'Horizon':<10} {'MSE':<12} {'MAE':<12} "
-          f"{'SMAPE':<12} {'WAPE':<12} {'Time(s)':<10}")
-    print("─" * 80)
+    print("\n\n--- ETT Benchmark Summary ---")
+    print(f"{'Dataset':<12} {'Horizon':<10} {'MSE':<12} {'MAE':<12} {'SMAPE':<12} {'WAPE':<12} {'Time(s)':<10}")
+    print("-" * 80)
     for key, r in sorted(all_results.items()):
-        print(f"{r['dataset']:<12} {r['pred_len']:<10} {r['mse']:<12.6f} "
-              f"{r['mae']:<12.6f} {r['smape']:<12.6f} {r['wape']:<12.6f} "
-              f"{r['time']:<10.2f}")
-    print("═" * 80)
-
+        print(f"{r['dataset']:<12} {r['pred_len']:<10} {r['mse']:<12.6f} {r['mae']:<12.6f} {r['smape']:<12.6f} {r['wape']:<12.6f} {r['time']:<10.2f}")
+    
     return all_results
 
 

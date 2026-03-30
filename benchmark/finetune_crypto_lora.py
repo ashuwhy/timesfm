@@ -46,9 +46,7 @@ C_CYAN = "#39D2C0"
 EPS = 1e-7
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# LoRA Implementation
-# ═══════════════════════════════════════════════════════════════════════════════
+# LoRA Definition
 
 class LoRALinear(nn.Module):
     """LoRA adapter wrapping an existing nn.Linear layer.
@@ -176,9 +174,7 @@ def load_lora_weights(model: nn.Module, path: str):
     print(f"  Loaded {loaded} LoRA adapter pairs from {path}")
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# Dataset
-# ═══════════════════════════════════════════════════════════════════════════════
+# Dataset Pipeline
 
 class CryptoTimeSeriesDataset(Dataset):
     """Sliding-window dataset for time series fine-tuning.
@@ -211,9 +207,7 @@ class CryptoTimeSeriesDataset(Dataset):
         return torch.from_numpy(context), torch.from_numpy(target)
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# Training
-# ═══════════════════════════════════════════════════════════════════════════════
+# Training Loop
 
 def train_one_epoch(model_module, dataloader, optimizer, device, pred_len, patch_len):
     """Train for one epoch, returning average loss."""
@@ -367,9 +361,7 @@ def validate(model_module, dataloader, device, pred_len, patch_len):
     return total_loss / max(n_batches, 1)
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# Backtest — returns per-window data for plotting
-# ═══════════════════════════════════════════════════════════════════════════════
+# Backtesting and Evaluation
 
 def run_backtest(model_wrapper, prices, context_len, pred_len, test_fraction=0.2):
     """Backtest returning per-window forecasts + aggregate metrics.
@@ -433,9 +425,7 @@ def run_backtest(model_wrapper, prices, context_len, pred_len, test_fraction=0.2
             "num_windows": len(windows), "windows": windows}
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# Charts — comprehensive multi-panel report
-# ═══════════════════════════════════════════════════════════════════════════════
+# Charting Utilities
 
 CHART_RC = {
     "figure.facecolor": C_BG, "axes.facecolor": C_CARD,
@@ -650,9 +640,7 @@ def plot_error_analysis(baseline_bt, finetuned_bt, results_dir, ticker):
     return path
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# Main
-# ═══════════════════════════════════════════════════════════════════════════════
+# Main Entrypoint
 
 import pandas as pd
 
@@ -840,16 +828,13 @@ def main():
     mae_imp = (baseline_bt["mae"] - finetuned_bt["mae"]) / baseline_bt["mae"] * 100
     dir_imp = (finetuned_bt["dir_acc"] - baseline_bt["dir_acc"]) * 100
 
-    print(f"\n{'='*64}")
-    print(f"  RESULTS — {primary_ticker} LoRA Fine-Tuning (rank {args.lora_rank})")
-    print(f"{'='*64}")
-    print(f"  {'Metric':<16} {'Zero-Shot':>12} {'LoRA':>12} {'Change':>12}")
-    print(f"  {'-'*52}")
-    print(f"  {'MSE':<16} {baseline_bt['mse']:>12.6f} {finetuned_bt['mse']:>12.6f} {mse_imp:>+11.1f}%")
-    print(f"  {'MAE':<16} {baseline_bt['mae']:>12.6f} {finetuned_bt['mae']:>12.6f} {mae_imp:>+11.1f}%")
-    print(f"  {'Dir Accuracy':<16} {baseline_bt['dir_acc']:>11.1%} {finetuned_bt['dir_acc']:>11.1%} {dir_imp:>+10.1f}pp")
-    print(f"  Trainable: {stats['pct_trainable']:.2f}% ({stats['lora_params']:,} params)  |  "
-          f"Training: {total_time:.0f}s")
+    print(f"\n\n--- RESULTS: {primary_ticker} LoRA Fine-Tuning (rank {args.lora_rank}) ---")
+    print(f"{'Metric':<16} {'Zero-Shot':>12} {'LoRA':>12} {'Change':>12}")
+    print("-" * 56)
+    print(f"{'MSE':<16} {baseline_bt['mse']:>12.6f} {finetuned_bt['mse']:>12.6f} {mse_imp:>+11.1f}%")
+    print(f"{'MAE':<16} {baseline_bt['mae']:>12.6f} {finetuned_bt['mae']:>12.6f} {mae_imp:>+11.1f}%")
+    print(f"{'Dir Accuracy':<16} {baseline_bt['dir_acc']:>11.1%} {finetuned_bt['dir_acc']:>11.1%} {dir_imp:>+10.1f}pp")
+    print(f"Trainable: {stats['pct_trainable']:.2f}% ({stats['lora_params']:,} params) | Training Time: {total_time:.0f}s")
 
     # ── Generate all charts ───────────────────────────────────────────────
     print(f"\n── Generating Charts ──")
