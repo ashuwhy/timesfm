@@ -57,12 +57,13 @@ class LoRALinear(nn.Module):
     Only A and B are trainable. The original W is frozen.
     """
 
-    def __init__(self, base_linear: nn.Linear, rank: int = 8, alpha: float = 16.0):
+    def __init__(self, base_linear: nn.Linear, rank: int = 8, alpha: float = 16.0, dropout_rate: float = 0.1):
         super().__init__()
         self.base_linear = base_linear
         self.rank = rank
         self.alpha = alpha
         self.scaling = alpha / rank
+        self.dropout = nn.Dropout(p=dropout_rate)
 
         in_features = base_linear.in_features
         out_features = base_linear.out_features
@@ -81,13 +82,13 @@ class LoRALinear(nn.Module):
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         # Original output
         base_out = self.base_linear(x)
-        # LoRA delta
-        lora_out = (x @ self.lora_A) @ self.lora_B * self.scaling
+        # LoRA delta with dropout
+        lora_out = (self.dropout(x) @ self.lora_A) @ self.lora_B * self.scaling
         return base_out + lora_out
 
 
 def inject_lora(model: nn.Module, rank: int = 8, alpha: float = 16.0,
-                target_modules: str = "all") -> dict:
+                target_modules: str = "all", dropout: float = 0.1) -> dict:
     """Inject LoRA adapters into the model's transformer layers.
 
     Args:
@@ -114,26 +115,26 @@ def inject_lora(model: nn.Module, rank: int = 8, alpha: float = 16.0,
         if target_modules in ("all", "attention"):
             # QKV projection (fused or separate)
             if hasattr(attn, "qkv_proj") and isinstance(attn.qkv_proj, nn.Linear):
-                attn.qkv_proj = LoRALinear(attn.qkv_proj, rank, alpha)
+                attn.qkv_proj = LoRALinear(attn.qkv_proj, rank, alpha, dropout)
                 injected += 1
             else:
                 for name in ("query", "key", "value"):
                     if hasattr(attn, name) and isinstance(getattr(attn, name), nn.Linear):
-                        setattr(attn, name, LoRALinear(getattr(attn, name), rank, alpha))
+                        setattr(attn, name, LoRALinear(getattr(attn, name), rank, alpha, dropout))
                         injected += 1
 
             # Output projection
             if isinstance(attn.out, nn.Linear):
-                attn.out = LoRALinear(attn.out, rank, alpha)
+                attn.out = LoRALinear(attn.out, rank, alpha, dropout)
                 injected += 1
 
         if target_modules in ("all", "ffn"):
             # Feedforward layers
             if isinstance(layer.ff0, nn.Linear):
-                layer.ff0 = LoRALinear(layer.ff0, rank, alpha)
+                layer.ff0 = LoRALinear(layer.ff0, rank, alpha, dropout)
                 injected += 1
             if isinstance(layer.ff1, nn.Linear):
-                layer.ff1 = LoRALinear(layer.ff1, rank, alpha)
+                layer.ff1 = LoRALinear(layer.ff1, rank, alpha, dropout)
                 injected += 1
 
     # Count trainable params
@@ -184,26 +185,29 @@ class CryptoTimeSeriesDataset(Dataset):
 
     Each sample is (context, target) pair of raw prices.
     RevIN inside the training loop handles normalization (matching model.decode()).
+    Each sample is (context, target) pair of raw prices.
+    Target length matches the prediction horizon (pred_len), NOT the model's
+    full output head (o_len=128). We only supervise the horizon we care about.
     """
 
     def __init__(self, prices: np.ndarray, context_len: int, pred_len: int,
                  stride: int = 1):
         self.context_len = context_len
         self.pred_len = pred_len
-        self.prices = prices
+        self.raw_prices = prices
 
         # Generate window indices
         total_len = context_len + pred_len
-        self.indices = list(range(0, len(self.prices) - total_len + 1, stride))
+        self.indices = list(range(0, len(self.raw_prices) - total_len + 1, stride))
 
     def __len__(self):
         return len(self.indices)
 
     def __getitem__(self, idx):
         start = self.indices[idx]
-        context = self.prices[start:start + self.context_len].astype(np.float32)
-        target = self.prices[start + self.context_len:
-                             start + self.context_len + self.pred_len].astype(np.float32)
+        context = self.raw_prices[start : start + self.context_len].astype(np.float32)
+        target = self.raw_prices[start + self.context_len :
+                                 start + self.context_len + self.pred_len].astype(np.float32)
         return torch.from_numpy(context), torch.from_numpy(target)
 
 
@@ -260,8 +264,9 @@ def train_one_epoch(model_module, dataloader, optimizer, device, pred_len, patch
         normed_inputs = revin(patched_inputs, context_mu, context_sigma, reverse=False)
         normed_inputs = torch.where(patched_masks, 0.0, normed_inputs)
 
-        # Forward pass
-        (_, _, normed_outputs, _), _ = model_module(normed_inputs, patched_masks)
+        # Forward pass with AMP
+        with torch.cuda.amp.autocast(dtype=torch.bfloat16 if torch.cuda.is_available() and torch.cuda.is_bf16_supported() else torch.float16, enabled=torch.cuda.is_available()):
+            (_, _, normed_outputs, _), _ = model_module(normed_inputs, patched_masks)
 
         # Reshape: (batch, patches, o*q) -> (batch, patches, o, q)
         o_len = model_module.o   # 128
@@ -269,21 +274,25 @@ def train_one_epoch(model_module, dataloader, optimizer, device, pred_len, patch
         normed_outputs = normed_outputs.reshape(batch_size, -1, o_len, q_len)
 
         # Point forecast: last patch, median quantile (index 5)
-        pf = normed_outputs[:, -1, :, 5]  # (batch, o_len)
+        pf = normed_outputs[:, -1, :, 5]  # (batch, o_len=128)
 
-        # De-normalize predictions
+        # Only supervise the first pred_len points — that's our actual horizon
+        pf_pred = pf[:, :pred_len]
+
+        # Normalize target to match model's RevIN output space
         last_mu = context_mu[:, -1:]
         last_sigma = context_sigma[:, -1:]
-        pf_denorm = pf * (last_sigma + EPS) + last_mu
+        target_normed = (target_batch - last_mu) / (last_sigma + EPS)
+        
+        # MSE loss on the prediction horizon only
+        loss = torch.mean((pf_pred - target_normed) ** 2)
 
-        # Truncate to pred_len
-        pf_pred = pf_denorm[:, :pred_len]
-
-        # MSE loss
-        loss = torch.mean((pf_pred - target_batch) ** 2)
-
-        optimizer.zero_grad()
+        optimizer.zero_grad(set_to_none=True)
         loss.backward()
+        # Clip gradients to prevent LoRA from corrupting pretrained weights
+        torch.nn.utils.clip_grad_norm_(
+            [p for p in model_module.parameters() if p.requires_grad], max_norm=1.0
+        )
         optimizer.step()
 
         total_loss += loss.item()
@@ -338,19 +347,20 @@ def validate(model_module, dataloader, device, pred_len, patch_len):
         normed_inputs = revin(patched_inputs, context_mu, context_sigma, reverse=False)
         normed_inputs = torch.where(patched_masks, 0.0, normed_inputs)
 
-        (_, _, normed_outputs, _), _ = model_module(normed_inputs, patched_masks)
+        with torch.cuda.amp.autocast(dtype=torch.bfloat16 if torch.cuda.is_available() and torch.cuda.is_bf16_supported() else torch.float16, enabled=torch.cuda.is_available()):
+            (_, _, normed_outputs, _), _ = model_module(normed_inputs, patched_masks)
 
         o_len = model_module.o
         q_len = model_module.q
         normed_outputs = normed_outputs.reshape(batch_size, -1, o_len, q_len)
 
         pf = normed_outputs[:, -1, :, 5]
+        pf_pred = pf[:, :pred_len]
         last_mu = context_mu[:, -1:]
         last_sigma = context_sigma[:, -1:]
-        pf_denorm = pf * (last_sigma + EPS) + last_mu
-        pf_pred = pf_denorm[:, :pred_len]
-
-        loss = torch.mean((pf_pred - target_batch) ** 2)
+        target_normed = (target_batch - last_mu) / (last_sigma + EPS)
+        
+        loss = torch.mean((pf_pred - target_normed) ** 2)
         total_loss += loss.item()
         n_batches += 1
 
@@ -384,12 +394,18 @@ def run_backtest(model_wrapper, prices, context_len, pred_len, test_fraction=0.2
         if window_end > test_end:
             break
         ctx_start = max(0, window_start - context_len)
-        ctx = prices[ctx_start:window_start]  # raw prices — forecast() normalizes internally
+        # Use raw prices for context; TimesFM internal compile normalizes automatically
+        ctx = prices[ctx_start:window_start]
         actual_raw = prices[window_start:window_end]
 
         point_forecast, _ = model_wrapper.forecast(horizon=pred_len, inputs=[ctx])
-        forecast_raw = point_forecast[0, :pred_len]  # already in raw scale
+        forecast_raw = point_forecast[0, :pred_len]
 
+        w_mse = float(np.mean((forecast_raw - actual_raw) ** 2))
+        w_mae = float(np.mean(np.abs(forecast_raw - actual_raw)))
+        mse_total += np.sum((forecast_raw - actual_raw) ** 2)
+        mae_total += np.sum(np.abs(forecast_raw - actual_raw))
+        num_elements += len(actual_raw)
         w_mse = float(np.mean((forecast_raw - actual_raw) ** 2))
         w_mae = float(np.mean(np.abs(forecast_raw - actual_raw)))
         mse_total += np.sum((forecast_raw - actual_raw) ** 2)
@@ -642,18 +658,23 @@ import pandas as pd
 
 def main():
     parser = argparse.ArgumentParser(description="LoRA fine-tune TimesFM 2.5 on crypto")
-    parser.add_argument("--ticker", type=str, default="BTC-USD")
+    parser.add_argument("--ticker", type=str, nargs="+", default=["BTC-USD"])
     parser.add_argument("--interval", type=str, default="1d", choices=["1h", "1d"])
     parser.add_argument("--context_len", type=int, default=512)
     parser.add_argument("--pred_len", type=int, default=30)
     parser.add_argument("--lora_rank", type=int, default=8)
     parser.add_argument("--lora_alpha", type=float, default=16.0)
+    parser.add_argument("--lora_dropout", type=float, default=0.1)
     parser.add_argument("--target_modules", type=str, default="all",
                         choices=["all", "attention", "ffn"])
-    parser.add_argument("--lr", type=float, default=1e-4)
+    parser.add_argument("--lr", type=float, default=3e-5)
+    parser.add_argument("--weight_decay", type=float, default=0.05)
+    parser.add_argument("--patience", type=int, default=3,
+                        help="Early stopping patience (epochs without val improvement)")
     parser.add_argument("--epochs", type=int, default=50)
     parser.add_argument("--batch_size", type=int, default=16)
-    parser.add_argument("--stride", type=int, default=1)
+    parser.add_argument("--stride", type=int, default=0,
+                        help="Window stride (0=auto, set to pred_len)")
     parser.add_argument("--test_fraction", type=float, default=0.2)
     parser.add_argument("--results_dir", type=str, default="./results/lora")
     parser.add_argument("--load-only", action="store_true",
@@ -662,6 +683,7 @@ def main():
 
     if torch.cuda.is_available():
         device = torch.device("cuda")
+        torch.backends.cudnn.benchmark = True
     elif torch.backends.mps.is_available():
         device = torch.device("mps")
     else:
@@ -670,48 +692,84 @@ def main():
 
     # ── Fetch data ────────────────────────────────────────────────────────
     period = "max" if args.interval == "1d" else "730d"
-    print(f"\nFetching {args.ticker} ({args.interval})...")
-    data = yf.download(args.ticker, period=period, interval=args.interval, progress=False)
-    if isinstance(data.columns, pd.MultiIndex):
-        data.columns = data.columns.get_level_values(0)
-    prices = data["Close"].dropna().values.astype(np.float64)
-    print(f"  {len(prices):,} candles fetched")
+    
+    train_datasets = []
+    val_datasets = []
+    
+    # We will use the first ticker as the primary for backtests
+    primary_prices = None
+    
+    print("\nLoading TimesFM 2.5 200M...")
+    model = timesfm.TimesFM_2p5_200M_torch.from_pretrained("google/timesfm-2.5-200m-pytorch")
+    model_module = model.model
 
-    n = len(prices)
-    test_size = int(n * args.test_fraction)
-    val_size = int(n * 0.1)
-    train_size = n - test_size - val_size
-    train_prices = prices[:train_size]
-    val_prices = prices[train_size:train_size + val_size]
+    for ticker in args.ticker:
+        print(f"\nFetching {ticker} ({args.interval})...")
+        data = yf.download(ticker, period=period, interval=args.interval, progress=False)
+        if isinstance(data.columns, pd.MultiIndex):
+            data.columns = data.columns.get_level_values(0)
+        prices = data["Close"].dropna().values.astype(np.float64)
+        print(f"  {len(prices):,} candles fetched")
+        
+        if primary_prices is None:
+            primary_prices = prices
 
-    train_ds = CryptoTimeSeriesDataset(train_prices, args.context_len, args.pred_len, stride=args.stride)
-    val_ds = CryptoTimeSeriesDataset(val_prices, args.context_len, args.pred_len, stride=args.pred_len)
-    train_loader = DataLoader(train_ds, batch_size=args.batch_size, shuffle=True, drop_last=True)
-    val_loader = DataLoader(val_ds, batch_size=args.batch_size, shuffle=False)
-    print(f"  Train: {len(train_ds):,}  Val: {len(val_ds):,}  Test: {test_size:,} candles")
+        n = len(prices)
+        test_size = int(n * args.test_fraction)
+        val_size = int(n * 0.15)  # 15% for validation — need enough windows
+        train_size = n - test_size - val_size
+        
+        # Auto-set stride to pred_len if not specified
+        train_stride = args.stride if args.stride > 0 else args.pred_len
+        
+        # Pure isolated splits: No overlap for validation/test targets into train
+        train_prices = prices[:train_size]
+        # Prepend just enough context to start forecasting exactly at train_size cutoff
+        val_start = max(0, train_size - args.context_len)
+        val_prices = prices[val_start : train_size + val_size]
+
+        train_ds = CryptoTimeSeriesDataset(train_prices, args.context_len, pred_len=args.pred_len, stride=train_stride)
+        val_ds = CryptoTimeSeriesDataset(val_prices, args.context_len, pred_len=args.pred_len, stride=args.pred_len)
+        train_datasets.append(train_ds)
+        val_datasets.append(val_ds)
+        print(f"  Train windows: {len(train_ds):,}  Val windows: {len(val_ds):,}  (stride={train_stride})")
+    
+    from torch.utils.data import ConcatDataset
+    train_ds = ConcatDataset(train_datasets)
+    val_ds = ConcatDataset(val_datasets)
+    
+    kwargs = {"pin_memory": True, "num_workers": min(4, os.cpu_count() or 1)} if torch.cuda.is_available() else {}
+    train_loader = DataLoader(train_ds, batch_size=args.batch_size, shuffle=True, drop_last=True, **kwargs)
+    val_loader = DataLoader(val_ds, batch_size=args.batch_size, shuffle=False, **kwargs)
+    print(f"  Combined Train: {len(train_ds):,} | Combined Val: {len(val_ds):,} batches/windows")
 
     # ── Load model ────────────────────────────────────────────────────────
     print("\nLoading TimesFM 2.5 200M...")
     model = timesfm.TimesFM_2p5_200M_torch.from_pretrained("google/timesfm-2.5-200m-pytorch")
     model_module = model.model
+    # normalize_inputs=False is CRITICAL: model.decode() already does per-patch
+    # RevIN internally (update_running_stats + revin). Setting this True would
+    # add a SECOND global mean/std normalization layer on top, creating a
+    # train/inference mismatch since training only uses per-patch RevIN.
     fc = timesfm.ForecastConfig(
         max_context=args.context_len, max_horizon=args.pred_len,
-        normalize_inputs=True, use_continuous_quantile_head=False,
+        normalize_inputs=False, use_continuous_quantile_head=False,
         force_flip_invariance=True,
     )
 
     # ── Baseline backtest ─────────────────────────────────────────────────
-    print("\n── Baseline Backtest (zero-shot) ──")
+    primary_ticker = args.ticker[0]
+    print(f"\n── Baseline Backtest (zero-shot) on {primary_ticker} ──")
     model.compile(fc)
-    baseline_bt = run_backtest(model, prices, args.context_len, args.pred_len, args.test_fraction)
+    baseline_bt = run_backtest(model, primary_prices, args.context_len, args.pred_len, args.test_fraction)
     print(f"  MSE: {baseline_bt['mse']:.6f}  MAE: {baseline_bt['mae']:.6f}  "
           f"Dir Acc: {baseline_bt['dir_acc']:.1%}  Windows: {baseline_bt['num_windows']}")
 
     # ── Inject LoRA ───────────────────────────────────────────────────────
-    print(f"\n── Injecting LoRA (rank={args.lora_rank}, alpha={args.lora_alpha}) ──")
+    print(f"\n── Injecting LoRA (rank={args.lora_rank}, alpha={args.lora_alpha}, dropout={args.lora_dropout}) ──")
     model_module = model_module.to("cpu")
     stats = inject_lora(model_module, rank=args.lora_rank, alpha=args.lora_alpha,
-                        target_modules=args.target_modules)
+                        target_modules=args.target_modules, dropout=args.lora_dropout)
     model_module = model_module.to(device)
     model_module.device = device  # sync the attribute TimesFM uses to route inputs
     model.model = model_module
@@ -722,7 +780,7 @@ def main():
     # ── Training ──────────────────────────────────────────────────────────
     patch_len = model_module.p
     os.makedirs(args.results_dir, exist_ok=True)
-    lora_path = os.path.join(args.results_dir, f"{args.ticker.replace('-','_').lower()}_lora.pt")
+    lora_path = os.path.join(args.results_dir, f"{primary_ticker.replace('-','_').lower()}_lora.pt")
 
     train_losses, val_losses, best_epoch = [], [], 0
     if args.load_only:
@@ -731,11 +789,12 @@ def main():
         total_time = 0.0
     else:
         trainable = [p for p in model_module.parameters() if p.requires_grad]
-        optimizer = torch.optim.AdamW(trainable, lr=args.lr, weight_decay=0.01)
+        optimizer = torch.optim.AdamW(trainable, lr=args.lr, weight_decay=args.weight_decay)
         scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.epochs, eta_min=args.lr*0.01)
 
-        print(f"\n── Training ({args.epochs} epochs) ──")
+        print(f"\n── Training ({args.epochs} epochs, patience={args.patience}) ──")
         best_val = float("inf")
+        epochs_no_improve = 0
         t_total = time.time()
 
         for epoch in range(1, args.epochs + 1):
@@ -750,21 +809,29 @@ def main():
             improved = ""
             if vl < best_val:
                 best_val, best_epoch = vl, epoch
+                epochs_no_improve = 0
                 save_lora_weights(model_module, lora_path)
                 improved = " ★"
+            else:
+                epochs_no_improve += 1
 
             if epoch % max(1, args.epochs // 20) == 0 or epoch == 1 or improved:
                 print(f"  Epoch {epoch:3d}/{args.epochs}  train={tl:.6f}  val={vl:.6f}  "
                       f"lr={optimizer.param_groups[0]['lr']:.2e}  {dt:.1f}s{improved}")
+
+            # Early stopping
+            if epochs_no_improve >= args.patience:
+                print(f"  Early stopping at epoch {epoch} (no val improvement for {args.patience} epochs)")
+                break
 
         total_time = time.time() - t_total
         print(f"\n  Best val: {best_val:.6f} @ epoch {best_epoch}  |  Total: {total_time:.0f}s")
         load_lora_weights(model_module, lora_path)
 
     # ── Fine-tuned backtest ───────────────────────────────────────────────
-    print("\n── Fine-Tuned Backtest ──")
+    print(f"\n── Fine-Tuned Backtest on {primary_ticker} ──")
     model.compile(fc)
-    finetuned_bt = run_backtest(model, prices, args.context_len, args.pred_len, args.test_fraction)
+    finetuned_bt = run_backtest(model, primary_prices, args.context_len, args.pred_len, args.test_fraction)
     print(f"  MSE: {finetuned_bt['mse']:.6f}  MAE: {finetuned_bt['mae']:.6f}  "
           f"Dir Acc: {finetuned_bt['dir_acc']:.1%}")
 
@@ -774,7 +841,7 @@ def main():
     dir_imp = (finetuned_bt["dir_acc"] - baseline_bt["dir_acc"]) * 100
 
     print(f"\n{'='*64}")
-    print(f"  RESULTS — {args.ticker} LoRA Fine-Tuning (rank {args.lora_rank})")
+    print(f"  RESULTS — {primary_ticker} LoRA Fine-Tuning (rank {args.lora_rank})")
     print(f"{'='*64}")
     print(f"  {'Metric':<16} {'Zero-Shot':>12} {'LoRA':>12} {'Change':>12}")
     print(f"  {'-'*52}")
@@ -787,14 +854,14 @@ def main():
     # ── Generate all charts ───────────────────────────────────────────────
     print(f"\n── Generating Charts ──")
     chart_paths = []
-    chart_paths.append(plot_training_curves(train_losses, val_losses, args.results_dir, args.ticker))
-    chart_paths.append(plot_metrics_comparison(baseline_bt, finetuned_bt, stats, args.results_dir, args.ticker))
-    chart_paths.append(plot_forecast_windows(baseline_bt, finetuned_bt, args.results_dir, args.ticker))
-    chart_paths.append(plot_error_analysis(baseline_bt, finetuned_bt, args.results_dir, args.ticker))
+    chart_paths.append(plot_training_curves(train_losses, val_losses, args.results_dir, primary_ticker))
+    chart_paths.append(plot_metrics_comparison(baseline_bt, finetuned_bt, stats, args.results_dir, primary_ticker))
+    chart_paths.append(plot_forecast_windows(baseline_bt, finetuned_bt, args.results_dir, primary_ticker))
+    chart_paths.append(plot_error_analysis(baseline_bt, finetuned_bt, args.results_dir, primary_ticker))
 
     # ── Save JSON results ─────────────────────────────────────────────────
     results = {
-        "ticker": args.ticker, "lora_rank": args.lora_rank, "lora_alpha": args.lora_alpha,
+        "ticker": primary_ticker, "lora_rank": args.lora_rank, "lora_alpha": args.lora_alpha,
         "target_modules": args.target_modules, "epochs": args.epochs, "best_epoch": best_epoch,
         "lora_params": stats["lora_params"], "pct_trainable": stats["pct_trainable"],
         "training_time_s": total_time,

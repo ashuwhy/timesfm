@@ -1,0 +1,48 @@
+{
+  "ticker": "BTC-USD",
+  "lora_rank": 8,
+  "lora_alpha": 16.0,
+  "target_modules": "all",
+  "epochs": 15,
+  "best_epoch": 3,
+  "lora_params": 2048000,
+  "pct_trainable": 0.885471215959512,
+  "training_time_s": 6.474403142929077,
+  "baseline": {
+    "mse": 88332759.4137141,
+    "mae": 6605.711430431547,
+    "dir_acc": 0.48645320197044334
+  },
+  "finetuned": {
+    "mse": 86167654.38352345,
+    "mae": 6646.374730282738,
+    "dir_acc": 0.47906403940886705
+  },
+  "mse_improvement_pct": 2.451078223482401,
+  "mae_improvement_pct": -0.6155779022356408,
+  "dir_acc_improvement_pp": -0.738916256157629,
+  "train_losses": [
+    0.7416528662045797,
+    0.673822843366199,
+    0.557529964380794,
+    0.44620750927262837,
+    0.4032009194294612,
+    0.35301672998401856,
+    0.2821182111899058
+  ],
+  "val_losses": [
+    0.4133405437072118,
+    0.3834625805417697,
+    0.37620465209086734,
+    0.3824441383282344,
+    0.4070521791776021,
+    0.40747955441474915,
+    0.39914387464523315
+  ],
+  "chart_paths": [
+    "./results/lora_final/btc_usd_training_curves.png",
+    "./results/lora_final/btc_usd_metrics_comparison.png",
+    "./results/lora_final/btc_usd_forecast_windows.png",
+    "./results/lora_final/btc_usd_error_analysis.png"
+  ]
+}
