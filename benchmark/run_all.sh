@@ -1,9 +1,14 @@
 #!/bin/bash
+<<<<<<< HEAD
 # Run all TimesFM 2.5 benchmarks
+=======
+# Run all base TimesFM 2.5 benchmarks
+>>>>>>> c04953b (feat: add benchmarking scripts for base Monash and ETT datasets)
 # Usage: bash benchmark/run_all.sh
 
 set -e
 
+<<<<<<< HEAD
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 cd "$PROJECT_DIR"
@@ -38,3 +43,30 @@ echo "Results:"
 echo "  ETT:    results/ett/results.json"
 echo "  Monash: results/monash/<run_id>/results.csv"
 echo "=============================================="
+=======
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
+cd "$PROJECT_DIR"
+
+echo "╔══════════════════════════════════════════════════════════╗"
+echo "║  Base TimesFM 2.5 200M — Full Benchmark Suite            ║"
+echo "╚══════════════════════════════════════════════════════════╝"
+echo ""
+
+# 1. ETT Long-Horizon Benchmark
+echo "▶ [1/2] ETT Long-Horizon Benchmark"
+python benchmark/run_base_ett.py --results_dir results/ett
+echo ""
+
+# 2. Monash Extended Benchmark
+echo "▶ [2/2] Monash Extended Benchmark"
+python benchmark/run_base_monash.py --save_dir results/monash
+echo ""
+
+echo "╔══════════════════════════════════════════════════════════╗"
+echo "║  All benchmarks complete!                                ║"
+echo "║  Results:                                                ║"
+echo "║    ETT   → results/ett/results.json                      ║"
+echo "║    Monash → results/monash/results.csv                   ║"
+echo "╚══════════════════════════════════════════════════════════╝"
+>>>>>>> c04953b (feat: add benchmarking scripts for base Monash and ETT datasets)
