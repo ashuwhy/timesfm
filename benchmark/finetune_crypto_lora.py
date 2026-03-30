@@ -182,31 +182,28 @@ def load_lora_weights(model: nn.Module, path: str):
 class CryptoTimeSeriesDataset(Dataset):
     """Sliding-window dataset for time series fine-tuning.
 
-    Each sample is (context, target) pair of normalized prices.
+    Each sample is (context, target) pair of raw prices.
+    RevIN inside the training loop handles normalization (matching model.decode()).
     """
 
     def __init__(self, prices: np.ndarray, context_len: int, pred_len: int,
                  stride: int = 1):
         self.context_len = context_len
         self.pred_len = pred_len
-
-        # Normalize globally using train-set statistics
-        self.mean = np.mean(prices)
-        self.std = np.std(prices) + EPS
-        self.norm_prices = (prices - self.mean) / self.std
+        self.prices = prices
 
         # Generate window indices
         total_len = context_len + pred_len
-        self.indices = list(range(0, len(self.norm_prices) - total_len + 1, stride))
+        self.indices = list(range(0, len(self.prices) - total_len + 1, stride))
 
     def __len__(self):
         return len(self.indices)
 
     def __getitem__(self, idx):
         start = self.indices[idx]
-        context = self.norm_prices[start:start + self.context_len].astype(np.float32)
-        target = self.norm_prices[start + self.context_len:
-                                  start + self.context_len + self.pred_len].astype(np.float32)
+        context = self.prices[start:start + self.context_len].astype(np.float32)
+        target = self.prices[start + self.context_len:
+                             start + self.context_len + self.pred_len].astype(np.float32)
         return torch.from_numpy(context), torch.from_numpy(target)
 
 
@@ -365,15 +362,14 @@ def validate(model_module, dataloader, device, pred_len, patch_len):
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def run_backtest(model_wrapper, prices, context_len, pred_len, test_fraction=0.2):
-    """Backtest returning per-window forecasts + aggregate metrics."""
+    """Backtest returning per-window forecasts + aggregate metrics.
+
+    Feeds raw prices to forecast() — the model normalizes internally
+    when compiled with normalize_inputs=True. Metrics are on raw scale.
+    """
     n = len(prices)
     test_size = int(n * test_fraction)
     train_size = n - test_size
-
-    train_data = prices[:train_size]
-    scaler_mean = np.mean(train_data)
-    scaler_std = np.std(train_data) + EPS
-    norm_prices = (prices - scaler_mean) / scaler_std
 
     test_start = train_size
     test_end = n
@@ -388,19 +384,17 @@ def run_backtest(model_wrapper, prices, context_len, pred_len, test_fraction=0.2
         if window_end > test_end:
             break
         ctx_start = max(0, window_start - context_len)
-        ctx = norm_prices[ctx_start:window_start]
-        actual_norm = norm_prices[window_start:window_end]
+        ctx = prices[ctx_start:window_start]  # raw prices — forecast() normalizes internally
         actual_raw = prices[window_start:window_end]
 
         point_forecast, _ = model_wrapper.forecast(horizon=pred_len, inputs=[ctx])
-        forecast_norm = point_forecast[0, :pred_len]
-        forecast_raw = forecast_norm * scaler_std + scaler_mean
+        forecast_raw = point_forecast[0, :pred_len]  # already in raw scale
 
-        w_mse = float(np.mean((forecast_norm - actual_norm) ** 2))
-        w_mae = float(np.mean(np.abs(forecast_norm - actual_norm)))
-        mse_total += np.sum((forecast_norm - actual_norm) ** 2)
-        mae_total += np.sum(np.abs(forecast_norm - actual_norm))
-        num_elements += len(actual_norm)
+        w_mse = float(np.mean((forecast_raw - actual_raw) ** 2))
+        w_mae = float(np.mean(np.abs(forecast_raw - actual_raw)))
+        mse_total += np.sum((forecast_raw - actual_raw) ** 2)
+        mae_total += np.sum(np.abs(forecast_raw - actual_raw))
+        num_elements += len(actual_raw)
 
         # Directional accuracy
         actual_dir = np.sign(np.diff(actual_raw))
@@ -688,7 +682,7 @@ def main():
     val_size = int(n * 0.1)
     train_size = n - test_size - val_size
     train_prices = prices[:train_size]
-    val_prices = prices[:train_size + val_size]
+    val_prices = prices[train_size:train_size + val_size]
 
     train_ds = CryptoTimeSeriesDataset(train_prices, args.context_len, args.pred_len, stride=args.stride)
     val_ds = CryptoTimeSeriesDataset(val_prices, args.context_len, args.pred_len, stride=args.pred_len)
