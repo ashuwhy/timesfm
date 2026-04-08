@@ -190,156 +190,108 @@ class CryptoTimeSeriesDataset(Dataset):
                  stride: int = 1):
         self.context_len = context_len
         self.pred_len = pred_len
-        self.raw_prices = prices
+
+        # Normalize globally using train-set statistics
+        self.mean = np.mean(prices)
+        self.std = np.std(prices) + EPS
+        self.norm_prices = (prices - self.mean) / self.std
 
         # Generate window indices
         total_len = context_len + pred_len
-        self.indices = list(range(0, len(self.raw_prices) - total_len + 1, stride))
+        self.indices = list(range(0, len(self.norm_prices) - total_len + 1, stride))
 
     def __len__(self):
         return len(self.indices)
 
     def __getitem__(self, idx):
         start = self.indices[idx]
-        context = self.raw_prices[start : start + self.context_len].astype(np.float32)
-        target = self.raw_prices[start + self.context_len :
-                                 start + self.context_len + self.pred_len].astype(np.float32)
+        context = self.norm_prices[start:start + self.context_len].astype(np.float32)
+        target = self.norm_prices[start + self.context_len:
+                                  start + self.context_len + self.pred_len].astype(np.float32)
         return torch.from_numpy(context), torch.from_numpy(target)
 
 
 # Training Loop
 
-def train_one_epoch(model_module, dataloader, optimizer, device, pred_len, patch_len):
-    """Train for one epoch, returning average loss."""
-    model_module.train()
-    total_loss = 0.0
-    n_batches = 0
+def _patch_and_revin(context_batch, patch_len, device):
+    """Pad context to patch boundary, compute RevIN stats, return normed patches + stats."""
+    batch_size = context_batch.shape[0]
+    ctx_len = context_batch.shape[1]
+    pad_len = patch_len - (ctx_len % patch_len)
+    if pad_len < patch_len:
+        padding = torch.zeros(batch_size, pad_len, device=device)
+        pad_mask = torch.ones(batch_size, pad_len, dtype=torch.bool, device=device)
+        inputs = torch.cat([padding, context_batch], dim=1)
+        masks = torch.cat([pad_mask,
+                           torch.zeros(batch_size, ctx_len, dtype=torch.bool, device=device)],
+                          dim=1)
+    else:
+        inputs = context_batch
+        masks = torch.zeros_like(context_batch, dtype=torch.bool)
 
-    for context_batch, target_batch in dataloader:
-        context_batch = context_batch.to(device)
-        target_batch = target_batch.to(device)
+    patched_inputs = inputs.reshape(batch_size, -1, patch_len)
+    patched_masks  = masks.reshape(batch_size, -1, patch_len)
 
-        batch_size = context_batch.shape[0]
-
-        # Pad context to multiple of patch_len
-        ctx_len = context_batch.shape[1]
-        pad_len = patch_len - (ctx_len % patch_len)
-        if pad_len < patch_len:
-            padding = torch.zeros(batch_size, pad_len, device=device)
-            pad_mask = torch.ones(batch_size, pad_len, dtype=torch.bool, device=device)
-            inputs = torch.cat([padding, context_batch], dim=1)
-            masks = torch.cat([pad_mask, torch.zeros(batch_size, ctx_len,
-                               dtype=torch.bool, device=device)], dim=1)
-        else:
-            inputs = context_batch
-            masks = torch.zeros_like(context_batch, dtype=torch.bool)
-
-        # Patch inputs
-        patched_inputs = inputs.reshape(batch_size, -1, patch_len)
-        patched_masks = masks.reshape(batch_size, -1, patch_len)
-
-        # Compute running stats for RevIN
-        n = torch.zeros(batch_size, device=device)
-        mu = torch.zeros(batch_size, device=device)
-        sigma = torch.zeros(batch_size, device=device)
-        patch_mus = []
-        patch_sigmas = []
-        num_input_patches = patched_inputs.shape[1]
-        for i in range(num_input_patches):
-            (n, mu, sigma), _ = update_running_stats(
-                n, mu, sigma, patched_inputs[:, i], patched_masks[:, i]
-            )
-            patch_mus.append(mu)
-            patch_sigmas.append(sigma)
-        context_mu = torch.stack(patch_mus, dim=1)
-        context_sigma = torch.stack(patch_sigmas, dim=1)
+    n   = torch.zeros(batch_size, device=device)
+    mu  = torch.zeros(batch_size, device=device)
+    sig = torch.zeros(batch_size, device=device)
+    patch_mus, patch_sigs = [], []
+    for i in range(patched_inputs.shape[1]):
+        (n, mu, sig), _ = update_running_stats(n, mu, sig, patched_inputs[:, i], patched_masks[:, i])
+        patch_mus.append(mu)
+        patch_sigs.append(sig)
+    context_mu    = torch.stack(patch_mus, dim=1)
+    context_sigma = torch.stack(patch_sigs, dim=1)
 
         # Normalize with RevIN
         normed_inputs = revin(patched_inputs, context_mu, context_sigma, reverse=False)
         normed_inputs = torch.where(patched_masks, 0.0, normed_inputs)
 
-        # Forward pass with AMP
-        with torch.cuda.amp.autocast(dtype=torch.bfloat16 if torch.cuda.is_available() and torch.cuda.is_bf16_supported() else torch.float16, enabled=torch.cuda.is_available()):
-            (_, _, normed_outputs, _), _ = model_module(normed_inputs, patched_masks)
+        # Forward pass
+        (_, _, normed_outputs, _), _ = model_module(normed_inputs, patched_masks)
 
-        # Reshape: (batch, patches, o*q) -> (batch, patches, o, q)
         o_len = model_module.o   # 128
         q_len = model_module.q   # 10
         normed_outputs = normed_outputs.reshape(batch_size, -1, o_len, q_len)
 
         # Point forecast: last patch, median quantile (index 5)
-        pf = normed_outputs[:, -1, :, 5]  # (batch, o_len=128)
+        pf = normed_outputs[:, -1, :, 5]  # (batch, o_len)
 
-        # Only supervise the first pred_len points — that's our actual horizon
-        pf_pred = pf[:, :pred_len]
-
-        # Normalize target to match model's RevIN output space
+        # De-normalize predictions
         last_mu = context_mu[:, -1:]
         last_sigma = context_sigma[:, -1:]
-        target_normed = (target_batch - last_mu) / (last_sigma + EPS)
-        
-        # MSE loss on the prediction horizon only
-        loss = torch.mean((pf_pred - target_normed) ** 2)
+        pf_denorm = pf * (last_sigma + EPS) + last_mu
 
-        optimizer.zero_grad(set_to_none=True)
+        # Truncate to pred_len
+        pf_pred = pf_denorm[:, :pred_len]
+
+        # MSE loss
+        loss = torch.mean((pf_pred - target_batch) ** 2)
+
+        optimizer.zero_grad()
         loss.backward()
-        # Clip gradients to prevent LoRA from corrupting pretrained weights
-        torch.nn.utils.clip_grad_norm_(
-            [p for p in model_module.parameters() if p.requires_grad], max_norm=1.0
-        )
         optimizer.step()
 
         total_loss += loss.item()
-        n_batches += 1
+        n_batches  += 1
 
     return total_loss / max(n_batches, 1)
 
 
 @torch.no_grad()
 def validate(model_module, dataloader, device, pred_len, patch_len):
-    """Validate, returning average loss."""
+    """Validate, returning average MAE in RevIN-normalized space."""
     model_module.eval()
     total_loss = 0.0
-    n_batches = 0
+    n_batches  = 0
 
     for context_batch, target_batch in dataloader:
         context_batch = context_batch.to(device)
-        target_batch = target_batch.to(device)
+        target_batch  = target_batch.to(device)
+        batch_size    = context_batch.shape[0]
 
-        batch_size = context_batch.shape[0]
-
-        # Same patching as training
-        ctx_len = context_batch.shape[1]
-        pad_len = patch_len - (ctx_len % patch_len)
-        if pad_len < patch_len:
-            padding = torch.zeros(batch_size, pad_len, device=device)
-            pad_mask = torch.ones(batch_size, pad_len, dtype=torch.bool, device=device)
-            inputs = torch.cat([padding, context_batch], dim=1)
-            masks = torch.cat([pad_mask, torch.zeros(batch_size, ctx_len,
-                               dtype=torch.bool, device=device)], dim=1)
-        else:
-            inputs = context_batch
-            masks = torch.zeros_like(context_batch, dtype=torch.bool)
-
-        patched_inputs = inputs.reshape(batch_size, -1, patch_len)
-        patched_masks = masks.reshape(batch_size, -1, patch_len)
-
-        n = torch.zeros(batch_size, device=device)
-        mu = torch.zeros(batch_size, device=device)
-        sigma = torch.zeros(batch_size, device=device)
-        patch_mus = []
-        patch_sigmas = []
-        for i in range(patched_inputs.shape[1]):
-            (n, mu, sigma), _ = update_running_stats(
-                n, mu, sigma, patched_inputs[:, i], patched_masks[:, i]
-            )
-            patch_mus.append(mu)
-            patch_sigmas.append(sigma)
-        context_mu = torch.stack(patch_mus, dim=1)
-        context_sigma = torch.stack(patch_sigmas, dim=1)
-
-        normed_inputs = revin(patched_inputs, context_mu, context_sigma, reverse=False)
-        normed_inputs = torch.where(patched_masks, 0.0, normed_inputs)
+        normed_inputs, patched_masks, context_mu, context_sigma = \
+            _patch_and_revin(context_batch, patch_len, device)
 
         with torch.cuda.amp.autocast(dtype=torch.bfloat16 if torch.cuda.is_available() and torch.cuda.is_bf16_supported() else torch.float16, enabled=torch.cuda.is_available()):
             (_, _, normed_outputs, _), _ = model_module(normed_inputs, patched_masks)
@@ -349,14 +301,14 @@ def validate(model_module, dataloader, device, pred_len, patch_len):
         normed_outputs = normed_outputs.reshape(batch_size, -1, o_len, q_len)
 
         pf = normed_outputs[:, -1, :, 5]
-        pf_pred = pf[:, :pred_len]
         last_mu = context_mu[:, -1:]
         last_sigma = context_sigma[:, -1:]
-        target_normed = (target_batch - last_mu) / (last_sigma + EPS)
-        
-        loss = torch.mean((pf_pred - target_normed) ** 2)
+        pf_denorm = pf * (last_sigma + EPS) + last_mu
+        pf_pred = pf_denorm[:, :pred_len]
+
+        loss = torch.mean((pf_pred - target_batch) ** 2)
         total_loss += loss.item()
-        n_batches += 1
+        n_batches  += 1
 
     return total_loss / max(n_batches, 1)
 
@@ -364,17 +316,13 @@ def validate(model_module, dataloader, device, pred_len, patch_len):
 # Backtesting and Evaluation
 
 def run_backtest(model_wrapper, prices, context_len, pred_len, test_fraction=0.2):
-    """Backtest returning per-window forecasts + aggregate metrics.
-
-    Feeds raw prices to forecast() — the model normalizes internally
-    when compiled with normalize_inputs=True. Metrics are on raw scale.
-    """
+    """Backtest returning per-window forecasts + aggregate metrics."""
     n = len(prices)
     test_size = int(n * test_fraction)
     train_size = n - test_size
 
     test_start = train_size
-    test_end = n
+    test_end   = n
     num_windows = (test_end - test_start) // pred_len
 
     mse_total, mae_total, num_elements = 0.0, 0.0, 0
@@ -382,33 +330,30 @@ def run_backtest(model_wrapper, prices, context_len, pred_len, test_fraction=0.2
 
     for w in range(num_windows):
         window_start = test_start + w * pred_len
-        window_end = window_start + pred_len
+        window_end   = window_start + pred_len
         if window_end > test_end:
             break
         ctx_start = max(0, window_start - context_len)
-        # Use raw prices for context; TimesFM internal compile normalizes automatically
-        ctx = prices[ctx_start:window_start]
+        ctx = norm_prices[ctx_start:window_start]
+        actual_norm = norm_prices[window_start:window_end]
         actual_raw = prices[window_start:window_end]
 
+        # Model receives raw prices; normalize_inputs=True handles RevIN internally
         point_forecast, _ = model_wrapper.forecast(horizon=pred_len, inputs=[ctx])
-        forecast_raw = point_forecast[0, :pred_len]
+        forecast_norm = point_forecast[0, :pred_len]
+        forecast_raw = forecast_norm * scaler_std + scaler_mean
 
-        w_mse = float(np.mean((forecast_raw - actual_raw) ** 2))
-        w_mae = float(np.mean(np.abs(forecast_raw - actual_raw)))
-        mse_total += np.sum((forecast_raw - actual_raw) ** 2)
-        mae_total += np.sum(np.abs(forecast_raw - actual_raw))
-        num_elements += len(actual_raw)
-        w_mse = float(np.mean((forecast_raw - actual_raw) ** 2))
-        w_mae = float(np.mean(np.abs(forecast_raw - actual_raw)))
-        mse_total += np.sum((forecast_raw - actual_raw) ** 2)
-        mae_total += np.sum(np.abs(forecast_raw - actual_raw))
-        num_elements += len(actual_raw)
+        w_mse = float(np.mean((forecast_norm - actual_norm) ** 2))
+        w_mae = float(np.mean(np.abs(forecast_norm - actual_norm)))
+        mse_total += np.sum((forecast_norm - actual_norm) ** 2)
+        mae_total += np.sum(np.abs(forecast_norm - actual_norm))
+        num_elements += len(actual_norm)
 
-        # Directional accuracy
+        # Directional accuracy on raw prices (sign of price change)
         actual_dir = np.sign(np.diff(actual_raw))
-        pred_dir = np.sign(np.diff(forecast_raw))
-        min_len = min(len(actual_dir), len(pred_dir))
-        dir_acc = float(np.mean(actual_dir[:min_len] == pred_dir[:min_len])) if min_len > 0 else 0.0
+        pred_dir   = np.sign(np.diff(forecast_raw))
+        min_len    = min(len(actual_dir), len(pred_dir))
+        dir_acc    = float(np.mean(actual_dir[:min_len] == pred_dir[:min_len])) if min_len > 0 else 0.0
 
         windows.append({
             "idx": w, "start": window_start, "end": window_end,
@@ -655,14 +600,10 @@ def main():
     parser.add_argument("--lora_dropout", type=float, default=0.1)
     parser.add_argument("--target_modules", type=str, default="all",
                         choices=["all", "attention", "ffn"])
-    parser.add_argument("--lr", type=float, default=3e-5)
-    parser.add_argument("--weight_decay", type=float, default=0.05)
-    parser.add_argument("--patience", type=int, default=3,
-                        help="Early stopping patience (epochs without val improvement)")
+    parser.add_argument("--lr", type=float, default=1e-4)
     parser.add_argument("--epochs", type=int, default=50)
     parser.add_argument("--batch_size", type=int, default=16)
-    parser.add_argument("--stride", type=int, default=0,
-                        help="Window stride (0=auto, set to pred_len)")
+    parser.add_argument("--stride", type=int, default=1)
     parser.add_argument("--test_fraction", type=float, default=0.2)
     parser.add_argument("--results_dir", type=str, default="./results/lora")
     parser.add_argument("--load-only", action="store_true",
@@ -716,20 +657,11 @@ def main():
         val_start = max(0, train_size - args.context_len)
         val_prices = prices[val_start : train_size + val_size]
 
-        train_ds = CryptoTimeSeriesDataset(train_prices, args.context_len, pred_len=args.pred_len, stride=train_stride)
-        val_ds = CryptoTimeSeriesDataset(val_prices, args.context_len, pred_len=args.pred_len, stride=args.pred_len)
-        train_datasets.append(train_ds)
-        val_datasets.append(val_ds)
-        print(f"  Train windows: {len(train_ds):,}  Val windows: {len(val_ds):,}  (stride={train_stride})")
-    
-    from torch.utils.data import ConcatDataset
-    train_ds = ConcatDataset(train_datasets)
-    val_ds = ConcatDataset(val_datasets)
-    
-    kwargs = {"pin_memory": True, "num_workers": min(4, os.cpu_count() or 1)} if torch.cuda.is_available() else {}
-    train_loader = DataLoader(train_ds, batch_size=args.batch_size, shuffle=True, drop_last=True, **kwargs)
-    val_loader = DataLoader(val_ds, batch_size=args.batch_size, shuffle=False, **kwargs)
-    print(f"  Combined Train: {len(train_ds):,} | Combined Val: {len(val_ds):,} batches/windows")
+    train_ds = CryptoTimeSeriesDataset(train_prices, args.context_len, args.pred_len, stride=args.stride)
+    val_ds = CryptoTimeSeriesDataset(val_prices, args.context_len, args.pred_len, stride=args.pred_len)
+    train_loader = DataLoader(train_ds, batch_size=args.batch_size, shuffle=True, drop_last=True)
+    val_loader = DataLoader(val_ds, batch_size=args.batch_size, shuffle=False)
+    print(f"  Train: {len(train_ds):,}  Val: {len(val_ds):,}  Test: {test_size:,} candles")
 
     # ── Load model ────────────────────────────────────────────────────────
     print("\nLoading TimesFM 2.5 200M...")
@@ -777,12 +709,11 @@ def main():
         total_time = 0.0
     else:
         trainable = [p for p in model_module.parameters() if p.requires_grad]
-        optimizer = torch.optim.AdamW(trainable, lr=args.lr, weight_decay=args.weight_decay)
+        optimizer = torch.optim.AdamW(trainable, lr=args.lr, weight_decay=0.01)
         scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.epochs, eta_min=args.lr*0.01)
 
         print(f"\n── Training ({args.epochs} epochs, patience={args.patience}) ──")
         best_val = float("inf")
-        epochs_no_improve = 0
         t_total = time.time()
 
         for epoch in range(1, args.epochs + 1):
@@ -797,20 +728,12 @@ def main():
             improved = ""
             if vl < best_val:
                 best_val, best_epoch = vl, epoch
-                epochs_no_improve = 0
                 save_lora_weights(model_module, lora_path)
                 improved = " ★"
-            else:
-                epochs_no_improve += 1
 
             if epoch % max(1, args.epochs // 20) == 0 or epoch == 1 or improved:
                 print(f"  Epoch {epoch:3d}/{args.epochs}  train={tl:.6f}  val={vl:.6f}  "
                       f"lr={optimizer.param_groups[0]['lr']:.2e}  {dt:.1f}s{improved}")
-
-            # Early stopping
-            if epochs_no_improve >= args.patience:
-                print(f"  Early stopping at epoch {epoch} (no val improvement for {args.patience} epochs)")
-                break
 
         total_time = time.time() - t_total
         print(f"\n  Best val: {best_val:.6f} @ epoch {best_epoch}  |  Total: {total_time:.0f}s")
