@@ -40,6 +40,7 @@ class ICFConfig:
 
   k_examples: int = 10
   example_len: int = 0  # if 0, examples are padded/truncated per-example
+  use_nope: bool = True  # if True, disable RoPE (NoPE mode per the paper)
 
 
 def _to_1d_np(x: Sequence[float] | np.ndarray) -> np.ndarray:
@@ -130,7 +131,9 @@ class TimesFM_ICF_2p5_200M_torch_module(nn.Module):
     self.output_projection_quantiles = dense.ResidualBlock(self.config.output_projection_quantiles)
 
     # Separator token embedding (paper: a common learnable separator token σ).
-    self.sep_token = nn.Parameter(torch.zeros(self.md))
+    # Initialized with Xavier uniform for meaningful gradient signal from the start.
+    self.sep_token = nn.Parameter(torch.empty(self.md))
+    nn.init.xavier_uniform_(self.sep_token.unsqueeze(0))
 
   def load_from_base_state_dict(self, base_state: dict[str, torch.Tensor]) -> None:
     """Load weights from base TimesFM module; ignores separator token."""
@@ -168,6 +171,7 @@ class TimesFM_ICF_2p5_200M_torch_module(nn.Module):
     input_embeddings: torch.Tensor,
     patch_mask: torch.Tensor,
     decode_caches: list[util.DecodeCache] | None = None,
+    apply_rope: bool = True,
   ) -> tuple[tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor], list[util.DecodeCache]]:
     if decode_caches is None:
       decode_caches = [None] * self.x
@@ -175,7 +179,9 @@ class TimesFM_ICF_2p5_200M_torch_module(nn.Module):
     output_embeddings = input_embeddings
     new_decode_caches: list[util.DecodeCache] = []
     for i, layer in enumerate(self.stacked_xf):
-      output_embeddings, new_cache = layer(output_embeddings, patch_mask, decode_caches[i])
+      output_embeddings, new_cache = layer(
+        output_embeddings, patch_mask, decode_caches[i], apply_rope=apply_rope
+      )
       new_decode_caches.append(new_cache)
 
     output_ts = self.output_projection_point(output_embeddings)
@@ -202,6 +208,7 @@ class TimesFM_ICF_2p5_200M_torch_module(nn.Module):
     example_masks: list[torch.Tensor],
     target_inputs: torch.Tensor,
     target_masks: torch.Tensor,
+    apply_rope: bool = True,
   ) -> tuple[torch.Tensor, torch.Tensor]:
     """Decode with in-context examples.
 
@@ -211,6 +218,7 @@ class TimesFM_ICF_2p5_200M_torch_module(nn.Module):
       example_masks: list of (B, T_ex) bool tensors (True = masked/padded).
       target_inputs: (B, T_ctx) float tensor.
       target_masks: (B, T_ctx) bool tensor.
+      apply_rope: if True, apply RoPE; if False, NoPE mode.
 
     Returns:
       point_forecast: (B, horizon)
@@ -259,7 +267,7 @@ class TimesFM_ICF_2p5_200M_torch_module(nn.Module):
 
     # Prefill forward pass (populates caches).
     (_, _, normed_outputs, normed_quantile_spread), decode_caches = self._forward_embeddings(
-      prefill_embeddings_t, prefill_patch_mask_t, decode_caches
+      prefill_embeddings_t, prefill_patch_mask_t, decode_caches, apply_rope=apply_rope
     )
 
     # Extract the last token (corresponding to the last target context patch).
@@ -303,7 +311,7 @@ class TimesFM_ICF_2p5_200M_torch_module(nn.Module):
       new_patch_mask = new_mask[..., -1]
 
       (_, _, new_normed_output, _), decode_caches = self._forward_embeddings(
-        new_embeddings, new_patch_mask, decode_caches
+        new_embeddings, new_patch_mask, decode_caches, apply_rope=apply_rope
       )
 
       new_renormed_output = util.revin(new_normed_output, new_mu, new_sigma, reverse=True)
@@ -524,6 +532,7 @@ class TimesFM_ICF_torch:
           example_masks=aligned_ex_masks,
           target_inputs=tgt_t2,
           target_masks=tgt_m2,
+          apply_rope=not icf.use_nope,
         )
 
       point_outs.append(point_t.detach().cpu().numpy())
