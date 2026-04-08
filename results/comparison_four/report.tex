@@ -1,0 +1,92 @@
+\documentclass[11pt]{article}
+\usepackage[margin=1in]{geometry}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{hyperref}
+\begin{document}
+\title{{TimesFM 2.5: Multi-method forecasting comparison on BTC-USD}}
+\author{Automated report}
+\maketitle
+
+\section{Methodology}
+Zero-shot uses the pretrained TimesFM 2.5 checkpoint. LoRA loads rank-8 attention adapters trained on the same ticker. ICF (inference) uses in-context examples sampled from the training split with no leakage. Metrics are MSE/MAE on raw USD closes and directional accuracy on successive returns.
+
+\section{Summary metrics}
+\begin{tabular}{lrrr}\hline
+Method & MSE & MAE & Dir.~acc. \\\hline
+Zero-shot & 66109736.395204 & 6049.736993 & 0.5148 \\
+LoRA & 60802047.955078 & 5836.480938 & 0.5012 \\
+ICF (inference) & 171359718.997975 & 10431.944445 & 0.4840 \\
+ICF (trained) & 74265109.149195 & 6896.145429 & 0.5197 \\
+\hline\end{tabular}
+
+\subsection{ETT (ICF benchmark)}
+\begin{tabular}{lrrr}\hline
+Key & MSE & MAE & Windows \\\hline
+etth1_h192 & 1.0678 & 0.7505 & 105 \\
+etth1_h336 & 1.1715 & 0.7927 & 56 \\
+etth1_h96 & 0.9747 & 0.7102 & 210 \\
+etth2_h192 & 1.8801 & 0.9558 & 105 \\
+etth2_h336 & 2.2663 & 1.0365 & 56 \\
+etth2_h96 & 1.4095 & 0.8390 & 210 \\
+ettm1_h192 & 1.5763 & 0.8665 & 420 \\
+ettm1_h336 & 1.7331 & 0.8951 & 238 \\
+ettm1_h96 & 1.3031 & 0.7978 & 840 \\
+ettm2_h192 & 2.0780 & 0.9349 & 420 \\
+ettm2_h336 & 4.0987 & 1.0949 & 238 \\
+ettm2_h96 & 1.6282 & 0.8140 & 840 \\
+\hline\end{tabular}
+
+\subsection{Monash (ICF benchmark, excerpt)}
+\begin{tabular}{llr}\hline
+Dataset & Metric & Value \\\hline
+m1_monthly & mae & 8403.162445 \\
+m1_monthly & mase & 1.377211 \\
+m1_monthly & smape & 0.114375 \\
+m1_monthly & time & 2.546521 \\
+m1_quarterly & mae & 9124.806000 \\
+m1_quarterly & mase & 1.688931 \\
+m1_quarterly & smape & 0.111464 \\
+m1_quarterly & time & 1.167341 \\
+m4_quarterly & mae & 227.040738 \\
+m4_quarterly & mase & 1.539576 \\
+m4_quarterly & smape & 0.022894 \\
+m4_quarterly & time & 1.117189 \\
+m4_yearly & mae & 598.151197 \\
+m4_yearly & mase & 6.112138 \\
+m4_yearly & smape & 0.069176 \\
+m4_yearly & time & 1.121106 \\
+tourism_monthly & mae & 7056.031359 \\
+tourism_monthly & mase & 1.632731 \\
+tourism_monthly & smape & 0.078809 \\
+tourism_monthly & time & 1.118197 \\
+tourism_quarterly & mae & 16432.049699 \\
+tourism_quarterly & mase & 2.171191 \\
+tourism_quarterly & smape & 0.083297 \\
+tourism_quarterly & time & 1.094729 \\
+\hline\end{tabular}
+
+
+\section{Figures}
+\includegraphics[width=0.92\linewidth]{comparison_metrics.png}
+\vspace{0.5em}
+
+\includegraphics[width=0.92\linewidth]{comparison_forecast_windows.png}
+\vspace{0.5em}
+
+\includegraphics[width=0.92\linewidth]{comparison_error_analysis.png}
+\vspace{0.5em}
+
+\includegraphics[width=0.92\linewidth]{comparison_cumulative_error.png}
+\vspace{0.5em}
+
+\includegraphics[width=0.92\linewidth]{comparison_radar.png}
+\vspace{0.5em}
+
+
+
+\section{Discussion}
+Lowest MSE among listed methods: lora.
+ICF inference without continued pretraining may underperform fine-tuning; optional ICF trained checkpoint adds a fourth curve when available.
+
+\end{document}

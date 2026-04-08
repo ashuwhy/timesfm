@@ -126,7 +126,12 @@ def _maybe_download_m3(dataset_name):
 # Main benchmark
 # ═════════════════════════════════════════════════════════════════════════════
 def run_monash_benchmark(save_dir: str, max_context: int = 512):
-    device = "cuda" if torch.cuda.is_available() else "cpu"
+    if torch.cuda.is_available():
+        device = "cuda"
+    elif torch.backends.mps.is_available():
+        device = "mps"
+    else:
+        device = "cpu"
     print(f"Device: {device}")
     print("Loading TimesFM 2.5 200M (PyTorch)...")
 

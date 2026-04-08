@@ -23,6 +23,12 @@ except ImportError:
   pass
 
 try:
+  from . import timesfm_icf
+  TimesFM_ICF_torch = timesfm_icf.TimesFM_ICF_torch
+except ImportError:
+  pass
+
+try:
   from .timesfm_2p5 import timesfm_2p5_flax
   TimesFM_2p5_200M_flax = timesfm_2p5_flax.TimesFM_2p5_200M_flax
 except ImportError:

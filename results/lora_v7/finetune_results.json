@@ -1,76 +1,37 @@
 {
   "ticker": "BTC-USD",
   "tickers_trained": [
-    "BTC-USD",
-    "ETH-USD",
-    "SPY"
+    "BTC-USD"
   ],
   "lora_rank": 8,
   "lora_alpha": 16.0,
   "target_modules": "attention",
-  "lr": 1e-05,
+  "lr": 3e-05,
   "epochs_configured": 50,
-  "epochs_run": 17,
-  "best_epoch": 2,
-  "patience": 15,
+  "epochs_run": 0,
+  "best_epoch": 0,
+  "patience": 10,
   "lora_params": 1228800,
   "pct_trainable": 0.5312827295757071,
-  "training_time_s": 431.40837693214417,
+  "training_time_s": 0.0,
   "baseline": {
     "mse": 66109675.1341182,
     "mae": 6049.734444754465,
     "dir_acc": 0.5147783251231527
   },
   "finetuned": {
-    "mse": 60856453.79813118,
-    "mae": 5834.607380022321,
-    "dir_acc": 0.5024630541871921
+    "mse": 61017811.07271053,
+    "mae": 5838.589313616071,
+    "dir_acc": 0.5061576354679802
   },
-  "mse_improvement_pct": 7.946221676826708,
-  "mae_improvement_pct": 3.5559753357219415,
-  "dir_acc_improvement_pp": -1.2315270935960632,
-  "train_losses": [
-    0.41291941050440073,
-    0.3971488890238106,
-    0.3859075491782278,
-    0.37390572181902826,
-    0.36357002798467875,
-    0.350142422830686,
-    0.33546287566423416,
-    0.31695185066200793,
-    0.304073303937912,
-    0.2903758608736098,
-    0.27908038441091776,
-    0.2659191661514342,
-    0.254935814300552,
-    0.24662276497110724,
-    0.23614759068004787,
-    0.2300167577341199,
-    0.22348744189366698
-  ],
-  "val_losses": [
-    1.2411826848983765,
-    1.237501859664917,
-    1.237877607345581,
-    1.2390320301055908,
-    1.2413016557693481,
-    1.2455394268035889,
-    1.2509369850158691,
-    1.2547752857208252,
-    1.2631248235702515,
-    1.2676221132278442,
-    1.2714908123016357,
-    1.279043197631836,
-    1.281402587890625,
-    1.2855796813964844,
-    1.287622094154358,
-    1.2872942686080933,
-    1.287900686264038
-  ],
+  "mse_improvement_pct": 7.70214654825892,
+  "mae_improvement_pct": 3.490155362463402,
+  "dir_acc_improvement_pp": -0.8620689655172487,
+  "train_losses": [],
+  "val_losses": [],
   "chart_paths": [
-    "./results/lora_v7/btc_usd_training_curves.png",
-    "./results/lora_v7/btc_usd_metrics_comparison.png",
-    "./results/lora_v7/btc_usd_forecast_windows.png",
-    "./results/lora_v7/btc_usd_error_analysis.png"
+    "results/lora_v7/btc_usd_metrics_comparison.png",
+    "results/lora_v7/btc_usd_forecast_windows.png",
+    "results/lora_v7/btc_usd_error_analysis.png"
   ]
 }

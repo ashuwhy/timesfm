@@ -227,6 +227,7 @@ class MultiHeadAttention(nn.Module):
     *,
     decode_cache: DecodeCache | None = None,
     patch_mask: torch.Tensor | None = None,
+    apply_rope: bool = True,
   ) -> tuple[torch.Tensor, DecodeCache | None]:
     b, n_patches, _ = inputs_q.shape
     if patch_mask is None:
@@ -252,7 +253,7 @@ class MultiHeadAttention(nn.Module):
       )
       next_index = decode_cache.next_index.clone()
 
-    if self.use_rotary_position_embeddings:
+    if self.use_rotary_position_embeddings and apply_rope:
       position = (
         torch.arange(n_patches, device=inputs_q.device)[None, :]
         + next_index[:, None]
@@ -356,11 +357,13 @@ class Transformer(nn.Module):
     input_embeddings: torch.Tensor,
     patch_mask: torch.Tensor,
     decode_cache: DecodeCache | None = None,
+    apply_rope: bool = True,
   ) -> tuple[torch.Tensor, DecodeCache | None]:
     attn_output, decode_cache = self.attn(
       inputs_q=self.pre_attn_ln(input_embeddings),
       decode_cache=decode_cache,
       patch_mask=patch_mask,
+      apply_rope=apply_rope,
     )
     attn_output = self.post_attn_ln(attn_output) + input_embeddings
     output_embeddings = (

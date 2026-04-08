@@ -1,0 +1,12 @@
+{
+  "ticker": "BTC-USD",
+  "best_val_loss": 0.0,
+  "best_epoch": 1,
+  "train_losses": [
+    2966.516098022461
+  ],
+  "val_losses": [
+    0.0
+  ],
+  "checkpoint": "results/icf_trained_smoke/btc_usd_icf.pt"
+}

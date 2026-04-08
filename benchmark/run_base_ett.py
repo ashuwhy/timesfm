@@ -115,7 +115,12 @@ def create_test_windows(data_df, ts_cols, boundaries, context_len, pred_len, nor
 
 # Main eval loop
 def run_ett_benchmark(results_dir: str, context_len: int = CONTEXT_LEN):
-    device = "cuda" if torch.cuda.is_available() else "cpu"
+    if torch.cuda.is_available():
+        device = "cuda"
+    elif torch.backends.mps.is_available():
+        device = "mps"
+    else:
+        device = "cpu"
     print(f"Device: {device}")
     print("Loading TimesFM 2.5 200M (PyTorch)...")
 

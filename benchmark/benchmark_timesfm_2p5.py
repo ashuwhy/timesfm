@@ -24,7 +24,12 @@ def generate_synthetic_data(batch_size, context_len, horizon_len):
 
 def run_benchmark():
     print("Loading TimesFM 2.5 200M model...")
-    device = "cuda" if torch.cuda.is_available() else "cpu"
+    if torch.cuda.is_available():
+        device = "cuda"
+    elif torch.backends.mps.is_available():
+        device = "mps"
+    else:
+        device = "cpu"
     print(f"Using device: {device}")
     
     # Initialize model

@@ -36,7 +36,12 @@ def fetch_and_forecast(ticker="AAPL", context_len=512, horizon_len=30):
     print(f"Last observed price: {context_data[-1]:.2f}")
 
     print("Loading TimesFM model...")
-    device = "cuda" if torch.cuda.is_available() else "cpu"
+    if torch.cuda.is_available():
+        device = "cuda"
+    elif torch.backends.mps.is_available():
+        device = "mps"
+    else:
+        device = "cpu"
     
     model = timesfm.TimesFM_2p5_200M_torch.from_pretrained("google/timesfm-2.5-200m-pytorch")
     
