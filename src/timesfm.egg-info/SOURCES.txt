@@ -3,6 +3,7 @@ README.md
 pyproject.toml
 src/timesfm/__init__.py
 src/timesfm/configs.py
+src/timesfm/timesfm_icf.py
 src/timesfm.egg-info/PKG-INFO
 src/timesfm.egg-info/SOURCES.txt
 src/timesfm.egg-info/dependency_links.txt
