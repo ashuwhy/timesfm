@@ -773,7 +773,7 @@ def write_latex_report(
     meth_items = [
         "\\textbf{Zero-shot} --- the pretrained TimesFM~2.5 (200M) checkpoint applied directly with no domain-specific adaptation.",
         "\\textbf{LoRA} --- rank-8 Low-Rank Adaptation of the attention projection matrices (40 adapter pairs, $\\approx$1.3M trainable parameters), optimised on the training split of the target ticker.",
-        "\\textbf{ICF (inference)} --- In-Context Fine-Tuning \\citep[ICF;][]{ICFTS2024} with $K=10$ example segments drawn from the training split and similarity-selected by log-return profile. All model weights are frozen; adaptation is realised entirely through prompt construction.",
+        "\\textbf{ICF (inference)} --- In-Context Fine-Tuning (ICF) with $K=10$ example segments drawn from the training split and similarity-selected by log-return profile. All model weights are frozen; adaptation is realised entirely through prompt construction.",
     ]
     if has_icf_trained:
         meth_items.append(
@@ -842,8 +842,8 @@ def write_latex_report(
         "\\end{abstract}\n"
         "\n"
         "\\section{Introduction}\n"
-        f"Foundation models for time-series forecasting have recently demonstrated strong "
-        "zero-shot generalisation across diverse domains~\\citep{TimesFM2024}. "
+        f        "Foundation models for time-series forecasting have recently demonstrated strong "
+        "zero-shot generalisation across diverse domains. "
         "However, domain-specific adaptation remains important for specialised tasks such as "
         f"high-volatility asset price prediction. "
         f"This report systematically compares {n_methods} adaptation strategies applied to "
