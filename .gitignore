@@ -1,4 +1,6 @@
 .venv/
+.hf_home/
+.matplotlib/
 dist/
 __pycache__/
 checkpoints/
