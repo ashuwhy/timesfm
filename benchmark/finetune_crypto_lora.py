@@ -294,15 +294,18 @@ def _compute_loss(
     future_batch: torch.Tensor,
     patch_len: int,
     dir_loss_weight: float = 0.0,
+    supervise_last_n: int = 0,
+    supervise_horizon: int = 0,
 ) -> torch.Tensor:
-    """Full-sequence MAE loss in RevIN-normalised space + optional directional loss.
+    """MAE loss in RevIN-normalised space, optionally focused on last patches.
 
-    Key properties:
-    - ALL patches are supervised, not just the last -> 16x more gradient signal.
-    - Loss is in RevIN-normalised space (scale-invariant, ~unit variance) so
-      BTC price magnitudes do not cause exploding gradients.
-    - Uses the median quantile channel (aridx) that matches model.decode().
-    - Optional directional loss penalises predicting the wrong sign of change.
+    Args:
+        supervise_last_n: If >0, only supervise the last N non-padded patches
+            instead of all patches.  Focuses adaptation on the forecasting
+            boundary that the backtest actually evaluates.
+        supervise_horizon: If >0, only supervise the first H time-steps of each
+            patch's output (e.g. 30 to match pred_len), not the full o_len=128.
+        dir_loss_weight: Weight for directional loss component (0=disabled).
     """
     batch_size = context_batch.shape[0]
     o_len  = model_module.o   # 128
@@ -324,14 +327,24 @@ def _compute_loss(
     target_norm = (target_raw - mu_exp) / (sigma_exp + EPS)
 
     valid_patch = ~patched_masks.all(dim=-1)             # (batch, n_patches)
-    patch_mask  = valid_patch[:, :, None].expand_as(pred_norm)
-    abs_err     = torch.abs(pred_norm - target_norm)
-    mae_loss    = abs_err[patch_mask].mean()
+
+    if supervise_last_n > 0:
+        n_valid = valid_patch.sum(dim=1, keepdim=True)   # (batch, 1)
+        patch_idx = torch.arange(n_patches, device=valid_patch.device).unsqueeze(0)
+        valid_patch = valid_patch & (patch_idx >= (n_valid - supervise_last_n))
+
+    h = min(supervise_horizon, o_len) if supervise_horizon > 0 else o_len
+    pred_h   = pred_norm[:, :, :h]
+    target_h = target_norm[:, :, :h]
+    patch_mask = valid_patch[:, :, None].expand(-1, -1, h)
+
+    abs_err  = torch.abs(pred_h - target_h)
+    mae_loss = abs_err[patch_mask].mean()
 
     if dir_loss_weight > 0.0:
-        pred_diff   = pred_norm[:, :, 1:] - pred_norm[:, :, :-1]
-        target_diff = target_norm[:, :, 1:] - target_norm[:, :, :-1]
-        dir_mask    = valid_patch[:, :, None].expand(-1, -1, o_len - 1)
+        pred_diff   = pred_h[:, :, 1:] - pred_h[:, :, :-1]
+        target_diff = target_h[:, :, 1:] - target_h[:, :, :-1]
+        dir_mask    = valid_patch[:, :, None].expand(-1, -1, h - 1)
         wrong_dir   = torch.relu(-pred_diff * target_diff)
         dir_loss    = wrong_dir[dir_mask].mean()
         return mae_loss + dir_loss_weight * dir_loss
@@ -347,6 +360,8 @@ def train_one_epoch(
     patch_len: int,
     grad_accum: int = 1,
     dir_loss_weight: float = 0.0,
+    supervise_last_n: int = 0,
+    supervise_horizon: int = 0,
 ) -> float:
     model_module.train()
     total_loss, n_batches = 0.0, 0
@@ -354,7 +369,8 @@ def train_one_epoch(
     for step, (context_batch, future_batch) in enumerate(dataloader):
         context_batch = context_batch.to(device)
         future_batch  = future_batch.to(device)
-        loss = _compute_loss(model_module, context_batch, future_batch, patch_len, dir_loss_weight)
+        loss = _compute_loss(model_module, context_batch, future_batch, patch_len,
+                             dir_loss_weight, supervise_last_n, supervise_horizon)
         (loss / grad_accum).backward()
         total_loss += float(loss.item())
         n_batches  += 1
@@ -553,60 +569,118 @@ def plot_metrics_comparison(baseline, finetuned, stats, results_dir, ticker):
 
 
 def plot_forecast_windows(baseline_bt, finetuned_bt, results_dir, ticker, n_windows=4):
+    """Forecast comparison across representative test windows.
+
+    Selects 4 windows that tell the full story:
+      - Best Improvement: where LoRA helped the most vs zero-shot
+      - Median Window:    typical/middle-of-the-road performance
+      - Worst Window:     where LoRA hurt the most (honesty check)
+      - Most Recent:      the latest test window (most relevant)
+
+    Each card shows the trailing context, actual prices, and both
+    forecasts so you can visually compare how each tracks the real data.
+    """
     plt.rcParams.update(CHART_RC)
     b_wins = baseline_bt["windows"]
     f_wins = finetuned_bt["windows"]
     if not b_wins:
         return None
 
-    mse_diffs = [f_wins[i]["mse"] - b_wins[i]["mse"] for i in range(min(len(b_wins), len(f_wins)))]
+    n_wins = min(len(b_wins), len(f_wins))
+    mse_diffs = [f_wins[i]["mse"] - b_wins[i]["mse"] for i in range(n_wins)]
     best_idx   = int(np.argmin(mse_diffs))
     worst_idx  = int(np.argmax(mse_diffs))
-    sorted_idx = sorted(range(len(b_wins)), key=lambda i: b_wins[i]["mse"])
+    sorted_idx = sorted(range(n_wins), key=lambda i: b_wins[i]["mse"])
     median_idx = sorted_idx[len(sorted_idx) // 2]
-    last_idx   = len(b_wins) - 1
+    last_idx   = n_wins - 1
     chosen = []
     for idx in [best_idx, median_idx, worst_idx, last_idx]:
         if idx not in chosen:
             chosen.append(idx)
     chosen = chosen[:n_windows]
 
-    fig, axes = plt.subplots(len(chosen), 1, figsize=(16, 4.5 * len(chosen)))
+    card_meta = {
+        best_idx:   ("Best Improvement",
+                     "Window where LoRA reduced error the most vs zero-shot"),
+        median_idx: ("Median Window",
+                     "Typical performance — middle of the pack by MSE"),
+        worst_idx:  ("Worst Window",
+                     "Window where LoRA performed worst relative to zero-shot"),
+        last_idx:   ("Most Recent",
+                     "Latest test window — closest to today's market"),
+    }
+
+    fig, axes = plt.subplots(len(chosen), 1, figsize=(18, 5.5 * len(chosen)),
+                             gridspec_kw={"hspace": 0.45})
     if len(chosen) == 1:
         axes = [axes]
-    labels = {
-        best_idx: "Best Improvement", worst_idx: "Worst Window",
-        median_idx: "Median Window",  last_idx: "Most Recent",
-    }
+
     for ax_i, wi in enumerate(chosen):
         ax = axes[ax_i]
         bw, fw   = b_wins[wi], f_wins[wi]
         pred_len = len(bw["actual"])
-        ctx_show = min(60, len(bw["context"]))
+        ctx_show = min(70, len(bw["context"]))
         days_ctx  = list(range(-ctx_show, 0))
         days_pred = list(range(0, pred_len))
-        ax.plot(days_ctx,  bw["context"][-ctx_show:], color=C_TEXT,  lw=1.5, alpha=0.5, label="Context")
-        ax.plot(days_pred, bw["actual"],              color=C_TITLE, lw=2.2, label="Actual",    marker="o", ms=3)
-        ax.plot(days_pred, bw["forecast"],            color=C_RED,   lw=2,   ls="--",
-                label=f'Zero-Shot (MSE={bw["mse"]:.4f})', alpha=0.85, marker="s", ms=3)
-        ax.plot(days_pred, fw["forecast"],            color=C_GREEN, lw=2,
-                label=f'LoRA (MSE={fw["mse"]:.4f})', alpha=0.85, marker="^", ms=3)
-        ax.axvline(0, color=C_ACCENT, ls=":", lw=1, alpha=0.6)
+
+        ctx_prices = bw["context"][-ctx_show:]
+        all_prices = list(ctx_prices) + list(bw["actual"])
+        y_min, y_max = min(all_prices), max(all_prices)
+        y_pad = (y_max - y_min) * 0.12
+        ax.set_ylim(y_min - y_pad, y_max + y_pad)
+
+        ax.fill_between(days_ctx, ctx_prices, y_min - y_pad,
+                        alpha=0.06, color=C_TEXT)
+        ax.plot(days_ctx, ctx_prices,
+                color=C_TEXT, lw=1.2, alpha=0.45, label="Historical context")
+        ax.plot(days_pred, bw["actual"], color=C_TITLE, lw=2.5,
+                label="Actual price", marker="o", ms=3.5, zorder=5)
+        ax.plot(days_pred, bw["forecast"], color=C_RED, lw=2, ls="--",
+                label="Zero-shot forecast", alpha=0.8, marker="s", ms=3)
+        ax.plot(days_pred, fw["forecast"], color=C_GREEN, lw=2.2,
+                label="LoRA forecast", alpha=0.9, marker="^", ms=3.5, zorder=4)
+
+        ax.axvspan(-0.5, pred_len - 0.5, alpha=0.04, color=C_ACCENT)
+        ax.axvline(0, color=C_ACCENT, ls=":", lw=1.2, alpha=0.5)
+        ax.annotate("Forecast starts", xy=(0.3, 0.97), xycoords=("data", "axes fraction"),
+                    fontsize=8, color=C_ACCENT, alpha=0.7, ha="left", va="top")
+
+        mse_change = (bw["mse"] - fw["mse"]) / bw["mse"] * 100 if bw["mse"] > 0 else 0
+        badge_color = C_GREEN if mse_change > 0 else C_RED
+        badge_sign  = "+" if mse_change > 0 else ""
+        badge_label = "LoRA better" if mse_change > 0 else "Zero-shot better"
+
+        title_text, subtitle_text = card_meta.get(wi, (f"Window {wi + 1}", ""))
         ax.set_title(
-            f"Window {wi + 1}: {labels.get(wi, f'Window {wi}')}",
-            fontsize=14, fontweight="bold", color=C_TITLE, pad=8,
+            f"{title_text}  (Window {wi + 1}/{n_wins})",
+            fontsize=15, fontweight="bold", color=C_TITLE, pad=14, loc="left",
         )
-        ax.set_xlabel("Days relative to forecast start", fontsize=11)
-        ax.set_ylabel("Price (USD)", fontsize=11)
-        ax.legend(fontsize=10, loc="upper left", framealpha=0.8)
+        ax.text(1.0, 1.06, f"{badge_sign}{mse_change:.1f}% MSE  {badge_label}",
+                transform=ax.transAxes, fontsize=11, fontweight="bold",
+                color=badge_color, ha="right", va="bottom",
+                bbox=dict(boxstyle="round,pad=0.35", fc=C_CARD, ec=badge_color, alpha=0.9))
+        if subtitle_text:
+            ax.text(0.0, 1.01, subtitle_text, transform=ax.transAxes,
+                    fontsize=9, color=C_TEXT, alpha=0.6, ha="left", va="bottom")
+
+        ax.set_xlabel("Days relative to forecast start", fontsize=10, labelpad=6)
+        ax.set_ylabel("Price (USD)", fontsize=10, labelpad=6)
+        ax.legend(fontsize=9, loc="upper left", framealpha=0.85, borderpad=0.8,
+                  handlelength=2.5)
         ax.yaxis.set_major_formatter(mticker.FuncFormatter(lambda x, _: f"${x:,.0f}"))
+        ax.tick_params(axis="both", labelsize=9)
         for spine in ax.spines.values():
             spine.set_color(C_GRID)
 
-    fig.suptitle(f"Forecast Comparison — {ticker}", fontsize=18, fontweight="bold", color=C_TITLE, y=1.01)
-    fig.tight_layout()
+    fig.suptitle(f"Forecast Comparison — {ticker}",
+                 fontsize=20, fontweight="bold", color=C_TITLE, y=1.02)
+    fig.text(0.5, 1.005,
+             f"Rolling {pred_len}-day forecasts on held-out test data  ·  "
+             f"{n_wins} total windows  ·  4 shown below",
+             ha="center", fontsize=10, color=C_TEXT, alpha=0.5)
+
     path = os.path.join(results_dir, f"{ticker.replace('-', '_').lower()}_forecast_windows.png")
-    fig.savefig(path, dpi=180, bbox_inches="tight", facecolor=C_BG)
+    fig.savefig(path, dpi=200, bbox_inches="tight", facecolor=C_BG, pad_inches=0.4)
     plt.close()
     print(f"  Chart saved: {path}")
     return path
@@ -685,6 +759,10 @@ def main():
                         help="Gradient accumulation steps.")
     parser.add_argument("--dir_loss_weight", type=float, default=0.0,
                         help="Weight for directional loss component (0=disabled).")
+    parser.add_argument("--supervise_last_n", type=int, default=0,
+                        help="Only supervise last N patches (0=all).")
+    parser.add_argument("--supervise_horizon", type=int, default=0,
+                        help="Only supervise first H steps per patch (0=full o_len).")
     parser.add_argument("--test_fraction",  type=float, default=0.2)
     parser.add_argument("--results_dir",    type=str,   default="./results/lora")
     parser.add_argument("--load-only",      action="store_true",
@@ -809,15 +887,20 @@ def main():
         trainable = [p for p in model_module.parameters() if p.requires_grad]
         optimizer = torch.optim.AdamW(trainable, lr=args.lr, weight_decay=0.01)
 
-        warmup_sched = torch.optim.lr_scheduler.LinearLR(
-            optimizer, start_factor=0.01, end_factor=1.0, total_iters=args.warmup_epochs
-        )
-        cosine_sched = torch.optim.lr_scheduler.CosineAnnealingLR(
-            optimizer, T_max=max(1, args.epochs - args.warmup_epochs), eta_min=args.lr * 0.01
-        )
-        scheduler = torch.optim.lr_scheduler.SequentialLR(
-            optimizer, schedulers=[warmup_sched, cosine_sched], milestones=[args.warmup_epochs]
-        )
+        if args.warmup_epochs > 0:
+            warmup_sched = torch.optim.lr_scheduler.LinearLR(
+                optimizer, start_factor=0.01, end_factor=1.0, total_iters=args.warmup_epochs
+            )
+            cosine_sched = torch.optim.lr_scheduler.CosineAnnealingLR(
+                optimizer, T_max=max(1, args.epochs - args.warmup_epochs), eta_min=args.lr * 0.01
+            )
+            scheduler = torch.optim.lr_scheduler.SequentialLR(
+                optimizer, schedulers=[warmup_sched, cosine_sched], milestones=[args.warmup_epochs]
+            )
+        else:
+            scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+                optimizer, T_max=args.epochs, eta_min=args.lr * 0.1
+            )
         best_val   = float("inf")
         no_improve = 0
         t_total    = time.time()
@@ -826,7 +909,9 @@ def main():
         for epoch in range(1, args.epochs + 1):
             t0 = time.time()
             tl = train_one_epoch(model_module, train_loader, optimizer, device, patch_len,
-                                    grad_accum=args.grad_accum, dir_loss_weight=args.dir_loss_weight)
+                                    grad_accum=args.grad_accum, dir_loss_weight=args.dir_loss_weight,
+                                    supervise_last_n=args.supervise_last_n,
+                                    supervise_horizon=args.supervise_horizon)
             vl = validate(model_module, val_loader, device, patch_len)
             scheduler.step()
             train_losses.append(tl)

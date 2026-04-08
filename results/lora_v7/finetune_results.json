@@ -1,0 +1,39 @@
+{
+  "ticker": "BTC-USD",
+  "tickers_trained": [
+    "BTC-USD",
+    "ETH-USD",
+    "SPY"
+  ],
+  "lora_rank": 8,
+  "lora_alpha": 16.0,
+  "target_modules": "attention",
+  "lr": 1e-05,
+  "epochs_configured": 50,
+  "epochs_run": 0,
+  "best_epoch": 0,
+  "patience": 15,
+  "lora_params": 1228800,
+  "pct_trainable": 0.5312827295757071,
+  "training_time_s": 0.0,
+  "baseline": {
+    "mse": 66109675.1341182,
+    "mae": 6049.734444754465,
+    "dir_acc": 0.5147783251231527
+  },
+  "finetuned": {
+    "mse": 61929471.34772715,
+    "mae": 5862.989653087798,
+    "dir_acc": 0.5086206896551725
+  },
+  "mse_improvement_pct": 6.323134666613586,
+  "mae_improvement_pct": 3.0868262627393097,
+  "dir_acc_improvement_pp": -0.6157635467980205,
+  "train_losses": [],
+  "val_losses": [],
+  "chart_paths": [
+    "./results/lora_v7/btc_usd_metrics_comparison.png",
+    "./results/lora_v7/btc_usd_forecast_windows.png",
+    "./results/lora_v7/btc_usd_error_analysis.png"
+  ]
+}
