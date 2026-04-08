@@ -1,0 +1,62 @@
+{
+  "ticker": "BTC-USD",
+  "tickers_trained": [
+    "BTC-USD"
+  ],
+  "lora_rank": 8,
+  "lora_alpha": 16.0,
+  "target_modules": "attention",
+  "lr": 3e-05,
+  "epochs_configured": 50,
+  "epochs_run": 11,
+  "best_epoch": 1,
+  "patience": 10,
+  "lora_params": 1228800,
+  "pct_trainable": 0.5312827295757071,
+  "training_time_s": 35.57458710670471,
+  "baseline": {
+    "mse": 66109675.1341182,
+    "mae": 6049.734444754465,
+    "dir_acc": 0.5147783251231527
+  },
+  "finetuned": {
+    "mse": 63223531.38043458,
+    "mae": 5943.278669084822,
+    "dir_acc": 0.5024630541871921
+  },
+  "mse_improvement_pct": 4.365690419486155,
+  "mae_improvement_pct": 1.7596768360956336,
+  "dir_acc_improvement_pp": -1.2315270935960632,
+  "train_losses": [
+    2.6136761903762817,
+    2.5077555775642395,
+    2.4057815074920654,
+    2.3175299167633057,
+    2.235675036907196,
+    2.158115863800049,
+    2.0535072833299637,
+    1.9833692163228989,
+    1.8952386677265167,
+    1.8279903680086136,
+    1.7446818947792053
+  ],
+  "val_losses": [
+    1.2866029739379883,
+    1.2939436435699463,
+    1.3022023439407349,
+    1.3123940229415894,
+    1.3259721994400024,
+    1.3375639915466309,
+    1.3415321111679077,
+    1.336176872253418,
+    1.341426134109497,
+    1.3534629344940186,
+    1.3607134819030762
+  ],
+  "chart_paths": [
+    "./results/lora_v2/btc_usd_training_curves.png",
+    "./results/lora_v2/btc_usd_metrics_comparison.png",
+    "./results/lora_v2/btc_usd_forecast_windows.png",
+    "./results/lora_v2/btc_usd_error_analysis.png"
+  ]
+}
