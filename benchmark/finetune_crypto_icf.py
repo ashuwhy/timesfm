@@ -256,6 +256,8 @@ def main():
     parser.add_argument("--test_fraction", type=float, default=0.2)
     parser.add_argument("--results_dir", type=str, default="results/icf_trained")
     parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument("--use_nope", action="store_true", default=False,
+                        help="Disable RoPE during training (train in NoPE mode)")
     args = parser.parse_args()
 
     if torch.cuda.is_available():
@@ -293,8 +295,10 @@ def main():
     )
     icf.compile(
         fc,
-        icf_config=ICFConfig(k_examples=args.k_examples, example_len=example_len),
+        icf_config=ICFConfig(k_examples=args.k_examples, example_len=example_len, use_nope=args.use_nope),
     )
+    mode_tag = "nope" if args.use_nope else "rope"
+    print(f"Positional encoding during training: {'NoPE (disabled)' if args.use_nope else 'RoPE (enabled)'}")
 
     train_ds = ICFCryptoDataset(
         train_prices, args.context_len, args.pred_len, args.k_examples, args.stride, args.seed
@@ -334,7 +338,7 @@ def main():
 
     os.makedirs(args.results_dir, exist_ok=True)
     ckpt_path = os.path.join(
-        args.results_dir, f"{args.ticker.replace('-', '_').lower()}_icf.pt"
+        args.results_dir, f"{args.ticker.replace('-', '_').lower()}_icf_{mode_tag}.pt"
     )
 
     best_val = float("inf")
@@ -365,13 +369,15 @@ def main():
 
     results = {
         "ticker": args.ticker,
+        "use_nope": args.use_nope,
+        "mode": mode_tag,
         "best_val_loss": best_val,
         "best_epoch": best_epoch,
         "train_losses": train_losses,
         "val_losses": val_losses,
         "checkpoint": ckpt_path,
     }
-    with open(os.path.join(args.results_dir, "icf_train_results.json"), "w") as f:
+    with open(os.path.join(args.results_dir, f"icf_train_results_{mode_tag}.json"), "w") as f:
         json.dump(results, f, indent=2)
     print("Done.")
 

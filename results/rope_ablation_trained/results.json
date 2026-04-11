@@ -1,0 +1,17 @@
+{
+  "checkpoint": "/Volumes/part_one/Coding/Projects/timesfm/results/icf_trained/btc_usd_icf.pt",
+  "noPE": {
+    "mse": 104696035.0021484,
+    "mae": 8267.10009765625,
+    "n_windows": 12
+  },
+  "RoPE": {
+    "mse": 63017854.22879058,
+    "mae": 6184.368977864583,
+    "n_windows": 12
+  },
+  "improvement": {
+    "mse_reduction_pct": 39.808748031864404,
+    "mae_reduction_pct": 25.193007163202587
+  }
+}
