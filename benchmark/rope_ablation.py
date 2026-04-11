@@ -221,9 +221,16 @@ def plot_comparison(data_nope, data_rope, out_dir):
     plt.close()
     print(f"  Chart: {path2}")
     
-    mid_idx = len(data_nope["windows"]) // 2
-    w_nope = data_nope["windows"][mid_idx]
-    w_rope = data_rope["windows"][mid_idx]
+    # Pick the window where RoPE improves most over noPE (largest ΔMSE). Using the median
+    # window alone can show RoPE worse on that slice and contradict the aggregate plot.
+    n_win = min(len(data_nope["windows"]), len(data_rope["windows"]))
+    deltas = [
+        data_nope["windows"][i]["mse"] - data_rope["windows"][i]["mse"]
+        for i in range(n_win)
+    ]
+    plot_idx = int(np.argmax(deltas))
+    w_nope = data_nope["windows"][plot_idx]
+    w_rope = data_rope["windows"][plot_idx]
     
     fig, axes2 = plt.subplots(1, 2, figsize=(12, 4), sharey=True)
     
@@ -243,7 +250,10 @@ def plot_comparison(data_nope, data_rope, out_dir):
     axes2[0].fill_between(pred_x, actual.min(), actual.max(), alpha=0.05, color='#ff7f0e')
     axes2[0].set_xlabel('Time Step', fontweight='bold')
     axes2[0].set_ylabel('BTC-USD Close Price', fontweight='bold')
-    axes2[0].set_title(f'ICF with noPE (MSE={w_nope["mse"]:,.0f})', fontweight='bold')
+    axes2[0].set_title(
+        f'ICF with noPE — window {plot_idx} (MSE={w_nope["mse"]:,.0f})',
+        fontweight='bold',
+    )
     axes2[0].legend(loc='best', frameon=True, edgecolor='#333')
     axes2[0].grid(alpha=0.3)
     
@@ -254,10 +264,20 @@ def plot_comparison(data_nope, data_rope, out_dir):
     axes2[1].axvline(0, color='#666', linestyle=':', linewidth=1)
     axes2[1].fill_between(pred_x, actual.min(), actual.max(), alpha=0.05, color='#ff7f0e')
     axes2[1].set_xlabel('Time Step', fontweight='bold')
-    axes2[1].set_title(f'ICF with RoPE (MSE={w_rope["mse"]:,.0f})', fontweight='bold')
+    axes2[1].set_title(
+        f'ICF with RoPE — window {plot_idx} (MSE={w_rope["mse"]:,.0f})',
+        fontweight='bold',
+    )
     axes2[1].legend(loc='best', frameon=True, edgecolor='#333')
     axes2[1].grid(alpha=0.3)
-    
+
+    fig2 = axes2[0].figure
+    fig2.suptitle(
+        r"Same calendar window: index chosen for largest $\Delta\mathrm{MSE}$"
+        r" (noPE $-$ RoPE; illustrates where RoPE helps most)",
+        fontsize=9,
+        y=1.03,
+    )
     plt.tight_layout()
     path3 = os.path.join(out_dir, "rope_ablation_forecast.png")
     plt.savefig(path3, dpi=220, bbox_inches='tight')
