@@ -1,26 +1,26 @@
 {
   "ICF Base (noPE)": {
-    "mse": 100267335.52262755,
-    "mae": 8048.469694010418,
+    "mse": 100575938.6727203,
+    "mae": 8044.941438802084,
     "n_windows": 12,
     "vs_base_nope_mse_pct": 0.0
   },
   "ICF Base (RoPE)": {
-    "mse": 62378702.29174003,
-    "mae": 6242.255566406249,
+    "mse": 61425746.65787688,
+    "mae": 6186.643001302083,
     "n_windows": 12,
-    "vs_base_nope_mse_pct": 37.787613516803894
+    "vs_base_nope_mse_pct": 38.926002114919676
   },
   "ICF Trained (noPE)": {
     "mse": 68227376.01828592,
     "mae": 6421.043153211805,
     "n_windows": 12,
-    "vs_base_nope_mse_pct": 31.95453368471241
+    "vs_base_nope_mse_pct": 32.163321646639965
   },
   "ICF Trained (RoPE)": {
     "mse": 63497275.851429194,
     "mae": 6173.487120225694,
     "n_windows": 12,
-    "vs_base_nope_mse_pct": 36.67202232864797
+    "vs_base_nope_mse_pct": 36.86633533885986
   }
 }

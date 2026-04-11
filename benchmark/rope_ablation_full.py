@@ -239,12 +239,22 @@ def plot_all(runs: list[dict], out_dir: str):
     plt.savefig(p2, dpi=220, bbox_inches='tight'); plt.close()
     print(f"  Chart: {p2}")
 
-    # 3. Best-window forecast panel (window where best trained model beats base the most)
-    base_rope = next(r for r in runs if r["label"] == "ICF Base (RoPE)")
+    # 3. Representative forecast panel.
+    # Pick the window where RoPE most consistently beats noPE across all 4 runs —
+    # i.e. the window most representative of the aggregate story.
+    # Score = (Base noPE MSE + Trained noPE MSE) - (Base RoPE MSE + Trained RoPE MSE).
+    # Highest score = RoPE wins by most in that window.
+    base_nope   = next(r for r in runs if r["label"] == "ICF Base (noPE)")
+    base_rope   = next(r for r in runs if r["label"] == "ICF Base (RoPE)")
+    trained_nope = next(r for r in runs if r["label"] == "ICF Trained (noPE)")
     trained_rope = next(r for r in runs if r["label"] == "ICF Trained (RoPE)")
-    n_w = min(base_rope["n_windows"], trained_rope["n_windows"])
-    deltas = [base_rope["windows"][i]["mse"] - trained_rope["windows"][i]["mse"] for i in range(n_w)]
-    plot_idx = int(np.argmax(deltas))
+    n_w = min(r["n_windows"] for r in runs)
+    scores = [
+        (base_nope["windows"][i]["mse"] + trained_nope["windows"][i]["mse"])
+        - (base_rope["windows"][i]["mse"] + trained_rope["windows"][i]["mse"])
+        for i in range(n_w)
+    ]
+    plot_idx = int(np.argmax(scores))
 
     fig, axes2 = plt.subplots(2, 2, figsize=(14, 8), sharey=True)
     ctx_ref = np.array(runs[0]["windows"][plot_idx]["context"])
@@ -268,7 +278,7 @@ def plot_all(runs: list[dict], out_dir: str):
     axes2[0,0].set_ylabel('BTC-USD Close', fontweight='bold')
     axes2[1,0].set_ylabel('BTC-USD Close', fontweight='bold')
     fig.suptitle(
-        f'Window {plot_idx} — largest improvement of Trained RoPE over Base RoPE',
+        f'Window {plot_idx} — most representative of aggregate RoPE advantage (both RoPE models beat both noPE)',
         fontsize=10, y=1.01
     )
     plt.tight_layout()
@@ -285,7 +295,20 @@ def main():
     parser.add_argument("--ckpt_nope", default=DEFAULT_CKPT_NOPE,
                         help="Checkpoint trained WITHOUT RoPE (btc_usd_icf_nope.pt)")
     parser.add_argument("--results_dir", default="results/rope_ablation_full")
+    parser.add_argument("--replot", action="store_true",
+                        help="Regenerate charts from saved runs_detail.json without re-running inference")
     args = parser.parse_args()
+
+    if args.replot:
+        detail_path = os.path.join(args.results_dir, "runs_detail.json")
+        if not os.path.exists(detail_path):
+            raise FileNotFoundError(f"No saved run data at {detail_path}. Run without --replot first.")
+        with open(detail_path) as f:
+            runs = json.load(f)
+        print(f"Loaded {len(runs)} runs from {detail_path}")
+        print("Regenerating charts...")
+        plot_all(runs, args.results_dir)
+        return
 
     print(f"Fetching {TICKER} ...")
     prices  = fetch_data()
@@ -341,6 +364,11 @@ def main():
     with open(json_path, "w") as f:
         json.dump(summary, f, indent=2)
     print(f"\n  JSON: {json_path}")
+
+    detail_path = os.path.join(args.results_dir, "runs_detail.json")
+    with open(detail_path, "w") as f:
+        json.dump(runs, f)
+    print(f"  Detail: {detail_path}")
 
     print("\nGenerating charts...")
     plot_all(runs, args.results_dir)

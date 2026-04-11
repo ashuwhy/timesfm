@@ -1,0 +1,206 @@
+{
+  "BTC-USD/1d": {
+    "ICF Base (noPE)": {
+      "label": "ICF Base (noPE)",
+      "use_nope": true,
+      "mse": 98380800.41623192,
+      "mae": 7919.489290364582,
+      "nmae": 0.08403526523307035,
+      "n_windows": 12
+    },
+    "ICF Base (RoPE)": {
+      "label": "ICF Base (RoPE)",
+      "use_nope": false,
+      "mse": 62052060.659952074,
+      "mae": 6214.027267795139,
+      "nmae": 0.06672140787639583,
+      "n_windows": 12
+    },
+    "ICF Trained (noPE)": {
+      "label": "ICF Trained (noPE)",
+      "use_nope": true,
+      "mse": 68227376.01828592,
+      "mae": 6421.043153211805,
+      "nmae": 0.06761908240297103,
+      "n_windows": 12
+    },
+    "ICF Trained (RoPE)": {
+      "label": "ICF Trained (RoPE)",
+      "use_nope": false,
+      "mse": 63497275.851429194,
+      "mae": 6173.487120225694,
+      "nmae": 0.06599788275893682,
+      "n_windows": 12
+    }
+  },
+  "BTC-USD/1h": {
+    "ICF Base (noPE)": {
+      "label": "ICF Base (noPE)",
+      "use_nope": true,
+      "mse": 10498622.062840357,
+      "mae": 2154.114279139727,
+      "nmae": 0.027527948649134135,
+      "n_windows": 116
+    },
+    "ICF Base (RoPE)": {
+      "label": "ICF Base (RoPE)",
+      "use_nope": false,
+      "mse": 3033773.986679449,
+      "mae": 1158.1493164062501,
+      "nmae": 0.014792836627212511,
+      "n_windows": 116
+    },
+    "ICF Trained (noPE)": {
+      "label": "ICF Trained (noPE)",
+      "use_nope": true,
+      "mse": 3598653.544508471,
+      "mae": 1261.5676465966237,
+      "nmae": 0.016078429592675615,
+      "n_windows": 116
+    },
+    "ICF Trained (RoPE)": {
+      "label": "ICF Trained (RoPE)",
+      "use_nope": false,
+      "mse": 2971685.7185476464,
+      "mae": 1151.6920146372127,
+      "nmae": 0.014680705779293706,
+      "n_windows": 116
+    }
+  },
+  "ETH-USD/1d": {
+    "ICF Base (noPE)": {
+      "label": "ICF Base (noPE)",
+      "use_nope": true,
+      "mse": 166560.6243006603,
+      "mae": 285.0564063178168,
+      "nmae": 0.08996155835842413,
+      "n_windows": 12
+    },
+    "ICF Base (RoPE)": {
+      "label": "ICF Base (RoPE)",
+      "use_nope": false,
+      "mse": 168098.63745657378,
+      "mae": 295.94415554470487,
+      "nmae": 0.09384885094081902,
+      "n_windows": 12
+    },
+    "ICF Trained (noPE)": {
+      "label": "ICF Trained (noPE)",
+      "use_nope": true,
+      "mse": 154464.8363727359,
+      "mae": 269.06236131456166,
+      "nmae": 0.08273634022439831,
+      "n_windows": 12
+    },
+    "ICF Trained (RoPE)": {
+      "label": "ICF Trained (RoPE)",
+      "use_nope": false,
+      "mse": 158482.25547421767,
+      "mae": 286.2116861979167,
+      "nmae": 0.09104975958525363,
+      "n_windows": 12
+    }
+  },
+  "EUR=X/1d": {
+    "ICF Base (noPE)": {
+      "label": "ICF Base (noPE)",
+      "use_nope": true,
+      "mse": 0.0005955852126983056,
+      "mae": 0.02012295921643575,
+      "nmae": 0.023300537656031142,
+      "n_windows": 8
+    },
+    "ICF Base (RoPE)": {
+      "label": "ICF Base (RoPE)",
+      "use_nope": false,
+      "mse": 0.00023670588963908837,
+      "mae": 0.011353436360756556,
+      "nmae": 0.013083987963474698,
+      "n_windows": 8
+    },
+    "ICF Trained (noPE)": {
+      "label": "ICF Trained (noPE)",
+      "use_nope": true,
+      "mse": 0.0002844653965685673,
+      "mae": 0.01252826601266861,
+      "nmae": 0.014455955339812272,
+      "n_windows": 8
+    },
+    "ICF Trained (RoPE)": {
+      "label": "ICF Trained (RoPE)",
+      "use_nope": false,
+      "mse": 0.00025002248735342587,
+      "mae": 0.01173915887872378,
+      "nmae": 0.013529051786909422,
+      "n_windows": 8
+    }
+  },
+  "GC=F/1d": {
+    "ICF Base (noPE)": {
+      "label": "ICF Base (noPE)",
+      "use_nope": true,
+      "mse": 153917.7645652381,
+      "mae": 329.15623067220054,
+      "nmae": 0.08477719657022967,
+      "n_windows": 8
+    },
+    "ICF Base (RoPE)": {
+      "label": "ICF Base (RoPE)",
+      "use_nope": false,
+      "mse": 64367.158019702634,
+      "mae": 193.97120768229166,
+      "nmae": 0.048795830919497685,
+      "n_windows": 8
+    },
+    "ICF Trained (noPE)": {
+      "label": "ICF Trained (noPE)",
+      "use_nope": true,
+      "mse": 80033.09723436311,
+      "mae": 228.20441589355468,
+      "nmae": 0.05847534268642045,
+      "n_windows": 8
+    },
+    "ICF Trained (RoPE)": {
+      "label": "ICF Trained (RoPE)",
+      "use_nope": false,
+      "mse": 57604.47972442309,
+      "mae": 182.73458658854167,
+      "nmae": 0.04626663534533604,
+      "n_windows": 8
+    }
+  },
+  "SPY/1d": {
+    "ICF Base (noPE)": {
+      "label": "ICF Base (noPE)",
+      "use_nope": true,
+      "mse": 929.7882580309989,
+      "mae": 22.211959966023763,
+      "nmae": 0.03584351168675491,
+      "n_windows": 8
+    },
+    "ICF Base (RoPE)": {
+      "label": "ICF Base (RoPE)",
+      "use_nope": false,
+      "mse": 435.2644115811137,
+      "mae": 15.45833231608073,
+      "nmae": 0.025268216147816457,
+      "n_windows": 8
+    },
+    "ICF Trained (noPE)": {
+      "label": "ICF Trained (noPE)",
+      "use_nope": true,
+      "mse": 567.3157029854522,
+      "mae": 16.743477884928385,
+      "nmae": 0.027642845249309364,
+      "n_windows": 8
+    },
+    "ICF Trained (RoPE)": {
+      "label": "ICF Trained (RoPE)",
+      "use_nope": false,
+      "mse": 512.4996691648654,
+      "mae": 15.833373387654623,
+      "nmae": 0.026209352273907055,
+      "n_windows": 8
+    }
+  }
+}
