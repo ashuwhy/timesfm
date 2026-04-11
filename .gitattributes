@@ -1,0 +1,6 @@
+# Git LFS — benchmark / experiment checkpoints under results/
+# After cloning: run `git lfs install` and `git lfs pull` to fetch binaries.
+results/**/*.pt filter=lfs diff=lfs merge=lfs -text
+results/**/*.pth filter=lfs diff=lfs merge=lfs -text
+results/**/*.safetensors filter=lfs diff=lfs merge=lfs -text
+results/**/*.ckpt filter=lfs diff=lfs merge=lfs -text

@@ -6,8 +6,9 @@ __pycache__/
 checkpoints/
 wandb/
 datasets/
-# Large artifacts — keep JSON/plots; download weights separately or use HF / releases
-results/**/*.pt
+# Large binaries under results/ are tracked with Git LFS (see .gitattributes).
+# Smoke-test runs (optional; remove these lines if you want them in the repo).
+results/icf_trained_smoke*/
 # results/
 timesfm_jax.egg-info/
 development_setup.md
